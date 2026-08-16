@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Virtual environment
+venv/
+
+# Generated output (regenerable via visualize.py)
+plots/
+
+# OS
+.DS_Store
