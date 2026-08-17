@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt pyflakes
+
+      - name: Lint
+        run: python -m pyflakes src/transformer/*.py scripts/*.py tests/*.py build_notebook.py
+
+      - name: Validate notebook JSON
+        run: python build_notebook.py
+
+      - name: Equivalence tests (pytest)
+        run: python -m pytest tests -q
+
+      - name: Verification suite — learned positions
+        run: python scripts/verify.py --n-chars 20
+
+      - name: Verification suite — RoPE + GQA checkpoint
+        run: python scripts/verify.py --rope --ckpt checkpoints/gpt_rope_gqa.pt --n-chars 20
