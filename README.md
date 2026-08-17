@@ -455,10 +455,11 @@ to expand for scoring. The cache the model returns is the small form —
 `(B, kv_heads, T, d_k)`, e.g. `(1, 2, 13, 32)` — never the expanded one.
 Expanding at store time would throw the whole saving away.
 
-**Measured payoff** (Part 12): 512 KiB → 256 KiB of KV cache at 128-token
-context, at the cost of +0.03 val loss (≈0.15 ppl), with decode throughput
-unchanged at this scale. The win is *memory*; at production scale that
-memory becomes long-context capability.
+**Measured payoff** (Part 12): 512 KiB → 256 KiB (GQA) → 128 KiB (MQA,
+`--kv-heads 1`) of KV cache at 128-token context, at the cost of +0.03 val
+loss (≈0.15 ppl) for GQA — MQA lands *between* them (ppl 4.55) — with decode
+throughput unchanged at this scale. The win is *memory*; at production
+scale that memory becomes long-context capability.
 
 **Two independent proofs that GQA computes the same function:**
 
@@ -489,7 +490,7 @@ python scripts/verify.py --rope --ckpt checkpoints/gpt_rope_gqa.pt  # RoPE + GQA
 | 4 | RoPE path is cache-safe | cached K stays rotated at its *original* position | step \|Δ\| = 3.6e-07 |
 | 5 | length extrapolation | RoPE generates past the 128-token window; learned positions refuse with a clear `ValueError` | 170 tokens (42 past the window) |
 | 6 | GQA correctness + cache math | trained checkpoint: prefill/step equality; cache `(1,2,13,32)` small-form vs `(1,4,13,32)` expanded; byte math; hand-rolled group loop | prefill 0.0, step 4.1e-06, loop bit-identical |
-| 7 | trained head-to-head | full MHA vs GQA checkpoint: cache bytes at full context, cached-decode tok/s, perplexity | 512→256 KiB; ~equal tok/s; ppl 4.49 → 4.64 |
+| 7 | trained head-to-head | full MHA vs GQA vs MQA checkpoints: cache bytes at full context, cached-decode tok/s, perplexity | 512→256→128 KiB; ~equal tok/s; ppl 4.49 / 4.64 / 4.55 |
 
 The *honest* part: thresholds are explicit (prefill `== 0.0`, step `< 1e-4`,
 same-seed text equality) and the numbers printed are whatever they are — if
@@ -514,6 +515,7 @@ a run degrades, it says so in plain sight.
 | `checkpoints/gpt.pt` | learned | 4 → 4 | 826,433 | 1.498 † | 4.47 |
 | `checkpoints/gpt_rope.pt` | RoPE | 4 → 4 | 810,049 | 1.5023 | 4.49 |
 | `checkpoints/gpt_rope_gqa.pt` | RoPE | 4 → 2 | 744,001 | 1.5339 | 4.64 |
+| `checkpoints/gpt_rope_mqa.pt` | RoPE | 4 → 1 | 710,977 | 1.5143 | 4.55 |
 
 † `checkpoints/gpt.pt` predates checkpoint metadata; its val loss was
 measured independently (same eval recipe as training). Reproduce any row
