@@ -1,22 +1,19 @@
 """
-Minimal training script for the Transformer.
+Seq2seq training library: datasets, training loop, greedy decoding.
 
 Tasks:
   reverse  — reverse a sequence of integers ([2,5,1,3] -> [3,1,5,2])
   copy     — copy a sequence of integers ([2,5,1,3] -> [2,5,1,3])
 
-Usage:
-  python train.py --task reverse [--epochs 100]
-  python train.py --task copy [--epochs 100]
-
-Saves the trained model to model.pt so visualize.py can load it.
+CLI entry points: scripts/train_seq2seq.py (single process),
+scripts/train_dist.py (DistributedDataParallel).
 """
 
-import argparse
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
-from transformer import Transformer, create_masks, create_look_ahead_mask, NoamSchedule
+
+from transformer.model import Transformer, create_masks, create_look_ahead_mask, NoamSchedule
 
 SOS_TOKEN = 1  # start-of-sequence
 PAD_TOKEN = 0
@@ -71,7 +68,7 @@ DATASETS = {"reverse": ReverseDataset, "copy": CopyDataset}
 # Training
 # ---------------------------------------------------------------------------
 
-def train(task: str, epochs: int):
+def train(task: str, epochs: int, save_path: str = "model.pt"):
     device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
     print(f"Using device: {device}")
 
@@ -129,8 +126,8 @@ def train(task: str, epochs: int):
             lr_now = optimizer.param_groups[0]["lr"]
             print(f"Epoch {epoch:2d} | Loss: {avg_loss:.4f} | LR: {lr_now:.2e}")
 
-    torch.save(model.state_dict(), "model.pt")
-    print("Training done! Model saved to model.pt")
+    torch.save(model.state_dict(), save_path)
+    print(f"Training done! Model saved to {save_path}")
     return model, device
 
 
@@ -183,13 +180,3 @@ def evaluate(model, device, task: str):
         print(f"Predicted: {pred_seq}")
         print(f"{'✓' if pred_seq == expected else '✗'}")
         print()
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--task", choices=list(DATASETS), default="reverse")
-    parser.add_argument("--epochs", type=int, default=100)
-    args = parser.parse_args()
-
-    model, device = train(args.task, args.epochs)
-    evaluate(model, device, args.task)

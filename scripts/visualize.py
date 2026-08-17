@@ -2,8 +2,8 @@
 Visualize attention weights of a trained model.
 
 Usage:
-  python train.py --task reverse     # first, train the model (saves model.pt)
-  python visualize.py --task reverse # then visualize attention
+  python scripts/train_seq2seq.py --task reverse     # first, train the model (saves checkpoints/model.pt)
+  python scripts/visualize.py --task reverse         # then visualize attention
 
 Produces PNG heatmaps in the "plots/" directory:
   - encoder self-attention (all layers)
@@ -13,13 +13,19 @@ Produces PNG heatmaps in the "plots/" directory:
 
 import argparse
 import os
+import sys
 
-import matplotlib
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CKPT = os.path.join(ROOT, "checkpoints")
+
+import matplotlib  # noqa: E402
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt
+import matplotlib.pyplot as plt  # noqa: E402
 
-import torch
-from transformer import Transformer, create_masks
+import torch  # noqa: E402
+
+from transformer.model import Transformer, create_masks  # noqa: E402
 
 PAD_TOKEN = 0
 SOS_TOKEN = 1
@@ -36,7 +42,7 @@ def load_model(task: str) -> Transformer:
         num_layers=2,
         max_len=6,
     )
-    model.load_state_dict(torch.load("model.pt", map_location="cpu"))
+    model.load_state_dict(torch.load(os.path.join(CKPT, "model.pt"), map_location="cpu"))
     model.eval()
     return model
 
@@ -55,7 +61,8 @@ def plot_heatmap(ax, weights: torch.Tensor, x_labels, y_labels, title: str):
 
 
 def main(task: str):
-    os.makedirs("plots", exist_ok=True)
+    plots_dir = os.path.join(ROOT, "plots")
+    os.makedirs(plots_dir, exist_ok=True)
     model = load_model(task)
 
     # A single test example (batch of 1)
@@ -84,7 +91,7 @@ def main(task: str):
             )
         fig.suptitle(f"Encoder self-attention — layer {layer_idx} (queries=keys=source)")
         fig.tight_layout()
-        fig.savefig(f"plots/encoder_self_attn_layer{layer_idx}.png", dpi=150)
+        fig.savefig(f"{plots_dir}/encoder_self_attn_layer{layer_idx}.png", dpi=150)
         plt.close(fig)
 
     # --- Decoder masked self-attention ---
@@ -101,7 +108,7 @@ def main(task: str):
             )
         fig.suptitle(f"Decoder masked self-attention — layer {layer_idx} (should be lower-triangular)")
         fig.tight_layout()
-        fig.savefig(f"plots/decoder_self_attn_layer{layer_idx}.png", dpi=150)
+        fig.savefig(f"{plots_dir}/decoder_self_attn_layer{layer_idx}.png", dpi=150)
         plt.close(fig)
 
     # --- Decoder cross-attention ---
@@ -118,10 +125,10 @@ def main(task: str):
             )
         fig.suptitle(f"Decoder cross-attention — layer {layer_idx} (queries=target, keys=source)")
         fig.tight_layout()
-        fig.savefig(f"plots/decoder_cross_attn_layer{layer_idx}.png", dpi=150)
+        fig.savefig(f"{plots_dir}/decoder_cross_attn_layer{layer_idx}.png", dpi=150)
         plt.close(fig)
 
-    print("Saved plots to plots/")
+    print(f"Saved plots to {plots_dir}/")
 
 
 if __name__ == "__main__":

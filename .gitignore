@@ -6,7 +6,7 @@ __pycache__/
 # Virtual environment
 venv/
 
-# Generated output (regenerable via visualize.py)
+# Generated output (regenerable via scripts/visualize.py)
 plots/
 
 # OS

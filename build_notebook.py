@@ -1,6 +1,14 @@
-"""Build notebooks/01_transformer_walkthrough.ipynb (nbformat 4 JSON)."""
+"""Build notebooks/01_transformer_walkthrough.ipynb (nbformat 4 JSON).
 
-import json
+Usage:
+  python3 build_notebook.py              # write + validate
+  python3 build_notebook.py --execute    # additionally run every cell (nbclient)
+
+The notebook is executed with cwd = notebooks/ (same as `jupyter notebook
+notebooks/`), so cell 1 derives the repo root from the kernel's cwd.
+"""
+
+import argparse
 import os
 import nbformat
 
@@ -19,8 +27,10 @@ CELLS = [
         "# 01 \u2014 Transformer from scratch: attention, GPT, RoPE, GQA\n\n"
         "Interactive version of the repo's demo scripts. Run cells top to bottom;\n"
         "everything runs on CPU or Apple MPS automatically (no CUDA required).\n\n"
-        "Repo: [`transformer.py`](../transformer.py), [`gpt.py`](../gpt.py),\n"
-        "[`rope_gen.py`](../rope_gen.py), [`train.py`](../train.py), "
+        "Repo: [`src/transformer/model.py`](../src/transformer/model.py), "
+        "[`src/transformer/gpt.py`](../src/transformer/gpt.py),\n"
+        "[`scripts/verify.py`](../scripts/verify.py), "
+        "[`scripts/train_seq2seq.py`](../scripts/train_seq2seq.py), "
         "[`README.md`](../README.md)"
     ),
     md(
@@ -29,15 +39,21 @@ CELLS = [
     ),
     code(
         "import math\n"
+        "import os\n"
+        "import sys\n"
         "import time\n"
         "import torch\n"
         "import torch.nn.functional as F\n"
         "import matplotlib.pyplot as plt\n\n"
+        "# Repo root = parent of the notebook directory (kernel cwd = notebooks/)\n"
+        "ROOT = os.path.dirname(os.getcwd())\n"
+        "sys.path.insert(0, os.path.join(ROOT, 'src'))\n"
+        "CKPT = os.path.join(ROOT, 'checkpoints')\n\n"
         "from transformer import (Transformer, create_masks, create_look_ahead_mask,\n"
         "                         precompute_rope, apply_rope)\n"
-        "from gpt import GPT, CharTokenizer\n"
+        "from transformer.gpt import GPT, CharTokenizer\n"
         "                              # CharTokenizer: checkpoints pickle it as\n"
-        "                              # __main__.CharTokenizer — torch.load needs it\n"
+        "                              # __main__.CharTokenizer \u2014 torch.load needs it\n"
         "                              # resolvable in this namespace\n\n"
         "device = torch.device('mps' if torch.backends.mps.is_available() else 'cpu')\n"
         "print('device:', device)"
@@ -47,8 +63,8 @@ CELLS = [
         "Attention output for a query = weighted average of values; weights come\n"
         "from the dot product of query with keys, softened by softmax. The\n"
         "`/sqrt(d_k)` keeps the softmax from saturating to one-hot (see\n"
-        "`deepdive.py`: max-P 0.47 \u2192 0.98 as d_k grows 8 \u2192 4096 without the\n"
-        "scale; flat 0.125 with it)."
+        "`src/transformer/attention.py`: max-P 0.47 \u2192 0.98 as d_k grows\n"
+        "8 \u2192 4096 without the scale; flat 0.125 with it)."
     ),
     code(
         "torch.manual_seed(0)\n"
@@ -67,14 +83,15 @@ CELLS = [
     ),
     md(
         "## 2. The seq2seq Transformer\n\n"
-        "`transformer.py` builds the full encoder\u2013decoder from the 2017 paper.\n"
-        "`train.py` teaches it reverse/copy on small integer sequences. We load\n"
-        "the trained `model.pt` and look at what attention actually learned."
+        "`src/transformer/model.py` builds the full encoder\u2013decoder from the\n"
+        "2017 paper. `scripts/train_seq2seq.py` teaches it reverse/copy on small\n"
+        "integer sequences. We load the trained `checkpoints/model.pt` and look\n"
+        "at what attention actually learned."
     ),
     code(
         "model = Transformer(src_vocab_size=20, tgt_vocab_size=20, d_model=64,\n"
         "                    num_heads=4, d_ff=128, num_layers=2, max_len=6)\n"
-        "model.load_state_dict(torch.load('model.pt', map_location='cpu'))\n"
+        "model.load_state_dict(torch.load(os.path.join(CKPT, 'model.pt'), map_location='cpu'))\n"
         "model.eval()\n"
         "print(f'params: {model.count_params():,}')"
     ),
@@ -97,11 +114,12 @@ CELLS = [
     ),
     md(
         "## 3. Decoder-only GPT: Shakespeare in ~800k params\n\n"
-        "`gpt.py` keeps only the masked self-attention half and trains a char-level\n"
-        "LM on `data/shakespeare.txt`. We load the RoPE checkpoint `gpt_rope.pt`."
+        "`src/transformer/gpt.py` keeps only the masked self-attention half and\n"
+        "trains a char-level LM on `data/shakespeare.txt`. We load the RoPE\n"
+        "checkpoint `checkpoints/gpt_rope.pt`."
     ),
     code(
-        "ckpt = torch.load('gpt_rope.pt', map_location='cpu', weights_only=False)\n"
+        "ckpt = torch.load(os.path.join(CKPT, 'gpt_rope.pt'), map_location='cpu', weights_only=False)\n"
         "tokenizer = ckpt['tokenizer']  # unpickled as __main__.CharTokenizer\n"
         "gpt = GPT(vocab_size=tokenizer.vocab_size, max_len=128, rope=True,\n"
         "          num_kv_heads=ckpt.get('num_kv_heads'))\n"
@@ -187,7 +205,7 @@ CELLS = [
         "on the trained checkpoints; quality: ppl 4.49 \u2192 4.64."
     ),
     code(
-        "gqa_ckpt = torch.load('gpt_rope_gqa.pt', map_location='cpu', weights_only=False)\n"
+        "gqa_ckpt = torch.load(os.path.join(CKPT, 'gpt_rope_gqa.pt'), map_location='cpu', weights_only=False)\n"
         "gqa = GPT(vocab_size=gqa_ckpt['tokenizer'].vocab_size, max_len=128, rope=True,\n"
         "          num_kv_heads=gqa_ckpt.get('num_kv_heads'))\n"
         "gqa.load_state_dict(gqa_ckpt['model'])\n"
@@ -216,21 +234,21 @@ CELLS = [
         "## 7. What's next\n\n"
         "Run the full verification harness for the whole story:\n\n"
         "```bash\n"
-        "python rope_gen.py                            # learned positions\n"
-        "python rope_gen.py --rope --ckpt gpt_rope.pt  # RoPE, full MHA\n"
-        "python rope_gen.py --rope --ckpt gpt_rope_gqa.pt  # GQA\n"
+        "python scripts/verify.py                            # learned positions\n"
+        "python scripts/verify.py --rope --ckpt checkpoints/gpt_rope.pt  # RoPE, full MHA\n"
+        "python scripts/verify.py --rope --ckpt checkpoints/gpt_rope_gqa.pt  # GQA\n"
         "```\n\nEach section is an equivalence proof (cached == naive, hand-rolled\n"
         "GQA loop == vectorized path, same-seed sampling == same text).\n\n"
         "Train your own:\n\n"
         "```bash\n"
-        "python gpt.py --epochs 30 --rope --save --save-path my_model.pt --kv-heads 2\n"
-        "python gpt.py --load --rope --load-path my_model.pt --prompt 'To be' --top-p 0.9\n"
+        "python scripts/gpt.py --epochs 30 --rope --save --save-path my_model.pt --kv-heads 2\n"
+        "python scripts/gpt.py --load --rope --load-path my_model.pt --prompt 'To be' --top-p 0.9\n"
         "```"
     ),
 ]
 
 
-def main():
+def main(execute: bool = False):
     os.makedirs("notebooks", exist_ok=True)
     nb = nbformat.v4.new_notebook()
     nb.metadata = {
@@ -242,15 +260,40 @@ def main():
                 else nbformat.v4.new_code_cell(c["source"]) for c in CELLS]
     nbformat.validate(nb)
     with open("notebooks/01_transformer_walkthrough.ipynb", "w") as f:
-        json.dump(nbformat.v4.writes(nb).splitlines(), f, indent=1)
-    # write canonical JSON
-    with open("notebooks/01_transformer_walkthrough.ipynb", "w") as f:
         nbformat.write(nb, f)
-    # re-validate by loading
     check = nbformat.read("notebooks/01_transformer_walkthrough.ipynb", as_version=4)
     nbformat.validate(check)
     print(f"OK: {len(check.cells)} cells written and validated")
 
+    if execute:
+        # Execute with cwd = notebooks/ to mirror `jupyter notebook notebooks/`
+        import nbclient
+
+        old_cwd = os.getcwd()
+        os.chdir("notebooks")
+        try:
+            client = nbclient.NotebookClient(nb, timeout=600,
+                                             resources={"metadata": {"path": "."}})
+            client.execute()
+            with open("01_transformer_walkthrough.ipynb", "w") as f:
+                nbformat.write(client.nb, f)
+            errors = [c for c in client.nb.cells
+                      if c.get("outputs") and any(o.get("output_type") == "error"
+                                                  for o in c["outputs"])]
+            print(f"Executed: {len(client.nb.cells)} cells, {len(errors)} errors")
+            if errors:
+                for c in errors:
+                    for o in c["outputs"]:
+                        if o.get("output_type") == "error":
+                            print(o.get("ename"), o.get("evalue"))
+                raise SystemExit(1)
+        finally:
+            os.chdir(old_cwd)
+
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--execute", action="store_true",
+                        help="run every cell with nbclient (requires the python3 kernel)")
+    args = parser.parse_args()
+    main(execute=args.execute)

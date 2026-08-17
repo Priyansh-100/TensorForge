@@ -1,12 +1,18 @@
 """
 Print attention weights as text matrices so patterns can be inspected in the terminal.
 
-Usage: python attention_dump.py
+Usage: python scripts/attention_dump.py
 """
 
-import torch
-from transformer import create_masks
-from visualize import load_model, SOS_TOKEN, PAD_TOKEN
+import os
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
+
+import torch  # noqa: E402
+
+from transformer.model import create_masks  # noqa: E402
+from visualize import load_model, SOS_TOKEN, PAD_TOKEN  # noqa: E402
 
 
 def fmt(w: torch.Tensor) -> str:

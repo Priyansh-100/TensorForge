@@ -6,16 +6,23 @@ Beam:   keep the top-k *complete sequences* at every step; only expand those.
         Trade-off: more beams = better search, exponentially more compute (k forward passes).
 
 Usage:
-  python train.py --task reverse --epochs 60     # train first (saves model.pt)
-  python decoding.py --task reverse --beam-size 4
+  python scripts/train_seq2seq.py --task reverse --epochs 100   # train first (saves checkpoints/model.pt)
+  python scripts/decode.py --task reverse --beam-size 4
 """
 
 import argparse
-import torch
-import torch.nn.functional as F
+import os
+import sys
 
-from transformer import Transformer, create_look_ahead_mask
-from train import greedy_decode, PAD_TOKEN, SOS_TOKEN
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CKPT = os.path.join(ROOT, "checkpoints")
+
+import torch  # noqa: E402
+import torch.nn.functional as F  # noqa: E402
+
+from transformer.model import Transformer, create_look_ahead_mask  # noqa: E402
+from transformer.trainer import greedy_decode, PAD_TOKEN, SOS_TOKEN  # noqa: E402
 
 
 def beam_decode(
@@ -80,7 +87,7 @@ def compare(task: str, beam_size: int):
         src_vocab_size=20, tgt_vocab_size=20,
         d_model=64, num_heads=4, d_ff=128, num_layers=2, max_len=6,
     )
-    model.load_state_dict(torch.load("model.pt", map_location="cpu"))
+    model.load_state_dict(torch.load(os.path.join(CKPT, "model.pt"), map_location="cpu"))
     model.to(device).eval()
 
     vocab_size = 20

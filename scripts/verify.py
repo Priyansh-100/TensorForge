@@ -1,5 +1,5 @@
 """
-RoPE + KV cache demo.
+RoPE + KV cache demo (the project's verification suite).
 
 1. Relative-position property of RoPE (why it beats sinusoidal embeddings):
    the attention score between query at position m and key at position n
@@ -12,21 +12,30 @@ RoPE + KV cache demo.
    prefix → O(T) instead of O(T²) attention work.
 
 Usage:
-  python gpt.py --epochs 30 --save   # train the char LM first (gpt.pt)
-  python rope_gen.py
+  python scripts/gpt.py --epochs 30 --save         # train the char LM first (checkpoints/gpt.pt)
+  python scripts/verify.py
+  python scripts/verify.py --rope --ckpt checkpoints/gpt_rope.pt
+  python scripts/verify.py --rope --ckpt checkpoints/gpt_rope_gqa.pt
 """
 
 import argparse
 import math
+import os
+import sys
 import time
 
-import torch
-import torch.nn.functional as F
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CKPT = os.path.join(ROOT, "checkpoints")
 
-from transformer import precompute_rope, apply_rope, create_look_ahead_mask
-from gpt import GPT, CharTokenizer  # CharTokenizer must be in THIS namespace:
-# checkpoints pickle it as `__main__.CharTokenizer`, so torch.load resolves
-# the class against the importing module — removing this import breaks loading.
+import torch  # noqa: E402
+import torch.nn.functional as F  # noqa: E402
+
+from transformer.model import precompute_rope, apply_rope, create_look_ahead_mask  # noqa: E402
+from transformer.gpt import GPT, CharTokenizer  # noqa: E402,F401
+# CharTokenizer must be in THIS namespace: checkpoints pickle it as
+# `__main__.CharTokenizer`, so torch.load resolves the class against the
+# importing module — removing this import breaks loading.
 
 
 def demo_relative_property():
@@ -286,8 +295,9 @@ def demo_gqa(device):
         print("  head i must attend to its group's K/V only — this would hide a cache-expansion bug")
 
     # --- same proof on the REAL trained checkpoint (4 query heads → 2 KV heads) ---
+    gqa_path = os.path.join(CKPT, "gpt_rope_gqa.pt")
     try:
-        ckpt = torch.load("gpt_rope_gqa.pt", map_location=device, weights_only=False)
+        ckpt = torch.load(gqa_path, map_location=device, weights_only=False)
         tok = ckpt["tokenizer"]
         trained = GPT(vocab_size=tok.vocab_size, max_len=128, rope=True,
                       num_kv_heads=ckpt.get("num_kv_heads")).to(device)
@@ -326,8 +336,8 @@ def demo_mha_vs_gqa(device):
     print("=" * 70)
     print("7. Trained head-to-head: full MHA vs GQA (gpt_rope.pt / gpt_rope_gqa.pt)")
     print("=" * 70)
-    paths = {"full MHA": ("gpt_rope.pt", None),
-             "GQA 4→2": ("gpt_rope_gqa.pt", 2)}
+    paths = {"full MHA": (os.path.join(CKPT, "gpt_rope.pt"), None),
+             "GQA 4→2": (os.path.join(CKPT, "gpt_rope_gqa.pt"), 2)}
     models: dict[str, GPT] = {}
     for tag, (path, kv) in paths.items():
         try:
@@ -366,7 +376,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--n-chars", type=int, default=200)
     parser.add_argument("--rope", action="store_true", help="load a RoPE-trained checkpoint")
-    parser.add_argument("--ckpt", type=str, default="gpt.pt", help="checkpoint path")
+    parser.add_argument("--ckpt", type=str, default=os.path.join(CKPT, "gpt.pt"),
+                        help="checkpoint path")
     args = parser.parse_args()
 
     demo_relative_property()
@@ -374,6 +385,8 @@ if __name__ == "__main__":
     device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
     ckpt = torch.load(args.ckpt, map_location="cpu", weights_only=False)  # contains tokenizer class
     tokenizer = ckpt["tokenizer"]
+    if not isinstance(tokenizer, CharTokenizer):
+        raise SystemExit(f"{args.ckpt} does not contain a CharTokenizer")
     model = GPT(vocab_size=tokenizer.vocab_size, max_len=128, rope=args.rope,
                 num_kv_heads=ckpt.get("num_kv_heads"))
     model.load_state_dict(ckpt["model"])

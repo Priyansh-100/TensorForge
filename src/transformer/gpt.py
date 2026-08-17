@@ -1,25 +1,21 @@
 """
-Mini-GPT: a decoder-only transformer for character-level language modeling.
+Mini-GPT library: a decoder-only transformer for character-level modeling.
 
 The insight: for language modeling you don't need an encoder — you only need
 the *masked* self-attention part (each token attends to past tokens only).
 That's exactly what the decoder half of a seq2seq transformer does, minus
 the cross-attention.
 
-Usage:
-  python gpt.py --epochs 30 --save
-  python gpt.py --load --sample
+CLI entry point: scripts/gpt.py
 """
 
-import argparse
 import math
-import time
 
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 
-from transformer import (
+from transformer.model import (
     MultiHeadAttention,
     FeedForward,
     NoamSchedule,
@@ -30,6 +26,7 @@ from transformer import (
 # ---------------------------------------------------------------------------
 # Data: character-level tokenizer
 # ---------------------------------------------------------------------------
+
 
 class CharTokenizer:
     def __init__(self, text: str):
@@ -67,6 +64,7 @@ class CharDataset(Dataset):
 # ---------------------------------------------------------------------------
 # Model
 # ---------------------------------------------------------------------------
+
 
 def _sample_token(logits: torch.Tensor, temperature: float, top_p: float) -> torch.Tensor:
     """Temperature + optional nucleus (top-p) sampling. top_p=1.0 is plain
@@ -306,6 +304,7 @@ class GPT(nn.Module):
 # Training
 # ---------------------------------------------------------------------------
 
+
 def train(
     tokenizer: CharTokenizer,
     train_data: torch.Tensor,
@@ -397,6 +396,7 @@ def train(
 # Sampling
 # ---------------------------------------------------------------------------
 
+
 def sample(model: GPT, tokenizer: CharTokenizer, prompt: str, n_chars: int, temperature: float,
            top_p: float = 1.0):
     device = next(model.parameters()).device
@@ -405,71 +405,3 @@ def sample(model: GPT, tokenizer: CharTokenizer, prompt: str, n_chars: int, temp
     idx = torch.tensor([start], dtype=torch.long, device=device)
     out = model.generate(idx, n_chars, temperature=temperature, top_p=top_p)
     print(tokenizer.decode(out[0].tolist()))
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--epochs", type=int, default=30)
-    parser.add_argument("--block-size", type=int, default=128)
-    parser.add_argument("--d-model", type=int, default=128)
-    parser.add_argument("--heads", type=int, default=4)
-    parser.add_argument("--d-ff", type=int, default=512)
-    parser.add_argument("--layers", type=int, default=4)
-    parser.add_argument("--batch-size", type=int, default=64)
-    parser.add_argument("--load", action="store_true", help="load gpt.pt and sample")
-    parser.add_argument("--save", action="store_true", help="save best checkpoint")
-    parser.add_argument("--prompt", type=str, default="To be, or not to be")
-    parser.add_argument("--temperature", type=float, default=0.8)
-    parser.add_argument("--n-chars", type=int, default=400)
-    parser.add_argument("--rope", action="store_true", help="use rotary positional embeddings")
-    parser.add_argument("--load-path", type=str, default="gpt.pt", help="checkpoint to load when --load is set")
-    parser.add_argument("--save-path", type=str, default="gpt.pt", help="checkpoint to write when --save is set")
-    parser.add_argument("--kv-heads", type=int, default=None,
-                        help="K/V heads per layer (GQA; must divide --heads). Default: one per query head")
-    parser.add_argument("--top-p", type=float, default=1.0,
-                        help="nucleus sampling mass (default 1.0 = plain temperature sampling)")
-    parser.add_argument("--seed", type=int, default=None,
-                        help="seed RNGs for reproducible training")
-    args = parser.parse_args()
-
-    if args.load:
-        ckpt = torch.load(args.load_path, map_location="cpu", weights_only=False)
-        tokenizer = ckpt["tokenizer"]
-        has_learned_pos = "pos_embedding.weight" in ckpt["model"]
-        if args.rope and has_learned_pos:
-            raise SystemExit(
-                f"{args.load_path} was trained with LEARNED position embeddings — "
-                f"drop --rope to load it."
-            )
-        if not args.rope and not has_learned_pos:
-            raise SystemExit(
-                f"{args.load_path} was trained with RoPE — pass --rope to load it."
-            )
-        num_kv_heads = args.kv_heads or ckpt.get("num_kv_heads")
-        model = GPT(vocab_size=tokenizer.vocab_size, max_len=args.block_size,
-                    rope=args.rope, num_kv_heads=num_kv_heads)
-        model.load_state_dict(ckpt["model"])
-        sample(model, tokenizer, args.prompt, args.n_chars, args.temperature,
-               args.top_p)
-    else:
-        with open("data/shakespeare.txt", "r", encoding="utf-8") as f:
-            text = f.read()
-
-        tokenizer = CharTokenizer(text)
-        print(f"Vocab size: {tokenizer.vocab_size} chars")
-
-        data = torch.tensor(tokenizer.encode(text), dtype=torch.long)
-        n_val = int(0.1 * len(data))
-        train_data, val_data = data[:-n_val], data[-n_val:]
-
-        t0 = time.time()
-        model = train(
-            tokenizer, train_data, val_data,
-            epochs=args.epochs, block_size=args.block_size,
-            d_model=args.d_model, num_heads=args.heads, d_ff=args.d_ff,
-            num_layers=args.layers, batch_size=args.batch_size, save=args.save,
-            rope=args.rope, save_path=args.save_path, num_kv_heads=args.kv_heads,
-            seed=args.seed,
-        )
-        print(f"Trained in {time.time() - t0:.1f}s\n")
-        sample(model, tokenizer, args.prompt, args.n_chars, args.temperature)

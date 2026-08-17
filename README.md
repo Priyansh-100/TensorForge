@@ -3,7 +3,7 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![PyTorch 2.x](https://img.shields.io/badge/pytorch-2.x-ee4c2c.svg)](https://pytorch.org)
 [![Platforms](https://img.shields.io/badge/platforms-macOS%20MPS%20%7C%20Linux%20CUDA%20%7C%20CPU-lightgrey.svg)]()
-[![from scratch](https://img.shields.io/badge/from_scratch-no%20nn.Transformer-success.svg)](transformer.py)
+[![from scratch](https://img.shields.io/badge/from_scratch-no%20nn.Transformer-success.svg)](src/transformer/model.py)
 
 **A complete transformer written line-by-line, verified numerically at every
 step.** No `nn.Transformer`, no HuggingFace, no black boxes: attention,
@@ -26,15 +26,15 @@ equivalence checks are executable code, not claims.
 - [Part 0 — The big picture (start here if you are new)](#part-0--the-big-picture-start-here-if-you-are-new)
 - [Part 1 — Setup & prerequisites](#part-1--setup--prerequisites)
 - [Part 2 — Project layout](#part-2--project-layout)
-- [Part 3 — Step 1: the math of attention (`deepdive.py`)](#part-3--step-1-the-math-of-attention-deepdivepy)
-- [Part 4 — Step 2: the architecture (`transformer.py`)](#part-4--step-2-the-architecture-transformerpy)
-- [Part 5 — Step 3: train a seq2seq model (`train.py`)](#part-5--step-3-train-a-seq2seq-model-trainpy)
-- [Part 6 — Step 4: decoding strategies (`decoding.py`)](#part-6--step-4-decoding-strategies-decodingpy)
-- [Part 7 — Step 5: look inside attention (`visualize.py` / `attention_dump.py`)](#part-7--step-5-look-inside-attention-visualizepy--attention_dumppy)
-- [Part 8 — Step 6: multi-GPU training (`train_dist.py`)](#part-8--step-6-multi-gpu-training-train_distpy)
-- [Part 9 — Step 7: the mini-GPT (`gpt.py`)](#part-9--step-7-the-mini-gpt-gptpy)
+- [Part 3 — Step 1: the math of attention (`src/transformer/attention.py`)](#part-3--step-1-the-math-of-attention-srctransformerattentionpy)
+- [Part 4 — Step 2: the architecture (`src/transformer/model.py`)](#part-4--step-2-the-architecture-srctransformermodelpy)
+- [Part 5 — Step 3: train a seq2seq model (`scripts/train_seq2seq.py`)](#part-5--step-3-train-a-seq2seq-model-scriptstrain_seq2seqpy)
+- [Part 6 — Step 4: decoding strategies (`scripts/decode.py`)](#part-6--step-4-decoding-strategies-scriptsdecodepy)
+- [Part 7 — Step 5: look inside attention (`scripts/visualize.py` / `scripts/attention_dump.py`)](#part-7--step-5-look-inside-attention-scriptsvisualizepy--scriptsattention_dumppy)
+- [Part 8 — Step 6: multi-GPU training (`scripts/train_dist.py`)](#part-8--step-6-multi-gpu-training-scriptstrain_distpy)
+- [Part 9 — Step 7: the mini-GPT (`scripts/gpt.py`)](#part-9--step-7-the-mini-gpt-scriptsgptpy)
 - [Part 10 — Step 8: Grouped Query Attention](#part-10--step-8-grouped-query-attention)
-- [Part 11 — Step 9: the verification suite (`rope_gen.py`)](#part-11--step-9-the-verification-suite-rope_genpy)
+- [Part 11 — Step 9: the verification suite (`scripts/verify.py`)](#part-11--step-9-the-verification-suite-scriptsverifypy)
 - [Part 12 — Results at a glance](#part-12--results-at-a-glance)
 - [Part 13 — Notebooks](#part-13--notebooks)
 - [Part 14 — Troubleshooting](#part-14--troubleshooting)
@@ -59,8 +59,8 @@ anything ordered. Two capabilities matter:
    "before". Order information has to be *injected*. That is the job of the
    **positional encodings**, and this repo implements all three historical
    flavors:
-   - **sinusoidal** (the original paper, `transformer.py`),
-   - **learned embeddings** (`gpt.py` default),
+   - **sinusoidal** (the original paper, `src/transformer/model.py`),
+   - **learned embeddings** (`scripts/gpt.py` default),
    - **RoPE / rotary** (what Llama and modern models use, `--rope`).
 
 ### A tiny glossary (all terms used in this repo)
@@ -99,13 +99,13 @@ anything ordered. Two capabilities matter:
 
 You need Python 3.10+ and a rough idea of what a matrix multiply is. That
 is genuinely about it. (Familiarity with `nn.Linear`, `softmax`, and
-backprop helps, but every concept is re-derived in `deepdive.py`.)
+backprop helps, but every concept is re-derived in `src/transformer/attention.py`.)
 
 ```bash
 cd Transformer
 python3 -m venv venv            # isolated environment
 source venv/bin/activate        # Windows: venv\Scripts\activate
-pip install torch numpy matplotlib
+pip install -r requirements.txt # torch, numpy, matplotlib (+ notebook/test extras)
 ```
 
 The project **auto-detects your device** (CUDA → MPS → CPU), so the same
@@ -121,7 +121,7 @@ Sanity check before continuing:
 
 ```bash
 python -c "import torch, matplotlib; print(torch.__version__)"
-python deepdive.py        # ~2 s; see Part 3
+python src/transformer/attention.py   # ~2 s; see Part 3
 ```
 
 ---
@@ -129,23 +129,30 @@ python deepdive.py        # ~2 s; see Part 3
 ## Part 2 — Project layout
 
 ```
-transformer.py        core architecture (attention, RoPE, positions, encoder/decoder, masks)
-train.py              seq2seq training (reverse / copy tasks)      → model.pt
-train_dist.py         distributed training (DDP) variant of train.py
-decoding.py           greedy vs beam-search decoding on model.pt
-deepdive.py           manual attention forward/backward vs torch.autograd (the math proof)
-visualize.py          attention heatmaps                           → plots/*.png
-attention_dump.py     same attention weights as readable text
-gpt.py                mini-GPT: training, RoPE, GQA, KV-cache inference
-rope_gen.py           the verification harness — 7 proof sections, all runnable
-data/shakespeare.txt  character corpus for the GPT
-model.pt              trained seq2seq (reverse task)
-gpt.pt                trained GPT, learned positions
-gpt_rope.pt           trained GPT + RoPE, full attention
-gpt_rope_gqa.pt       trained GPT + RoPE + GQA (4 heads → 2 KV heads)
-plots/                output of visualize.py
-notebooks/            interactive versions of the demos
-venv/                 local Python environment (not part of the project)
+src/transformer/        the library (importable package)
+  model.py              core architecture (attention, RoPE, positions, encoder/decoder, masks)
+  attention.py          manual attention forward/backward vs torch.autograd (the math proof)
+  gpt.py                mini-GPT: model, training, RoPE, GQA, KV-cache inference
+  trainer.py            seq2seq datasets (reverse/copy) + training loop
+scripts/                runnable entry points
+  train_seq2seq.py      seq2seq training (reverse / copy tasks)     → checkpoints/model.pt
+  train_dist.py         distributed training (DDP) variant of train_seq2seq.py
+  decode.py             greedy vs beam-search decoding on checkpoints/model.pt
+  visualize.py          attention heatmaps                          → plots/*.png
+  attention_dump.py     same attention weights as readable text
+  gpt.py                mini-GPT CLI: train / sample, RoPE, GQA, KV cache
+  verify.py             the verification harness — 7 proof sections, all runnable
+tests/
+  test_equivalence.py   the proofs as pytest tests (python -m pytest tests)
+checkpoints/            trained models
+  model.pt              trained seq2seq (reverse task)
+  gpt.pt                trained GPT, learned positions
+  gpt_rope.pt           trained GPT + RoPE, full attention
+  gpt_rope_gqa.pt       trained GPT + RoPE + GQA (4 heads → 2 KV heads)
+data/shakespeare.txt    character corpus for the GPT
+notebooks/              interactive versions of the demos
+plots/                  output of visualize.py
+venv/                   local Python environment (not part of the project)
 ```
 
 **Suggested order** (mirrored by this README): math → architecture → train
@@ -153,7 +160,7 @@ venv/                 local Python environment (not part of the project)
 
 ---
 
-## Part 3 — Step 1: the math of attention (`deepdive.py`)
+## Part 3 — Step 1: the math of attention (`src/transformer/attention.py`)
 
 Everything in this repo is a wrapper around one formula:
 
@@ -167,7 +174,7 @@ P  =  softmax(S)      probabilities over keys (rows sum to 1)
 Y  =  P · V           output: weighted average of the values
 ```
 
-`deepdive.py` does three things, *numerically*:
+`src/transformer/attention.py` does three things, *numerically*:
 
 **3.1 Forward and backward, by hand.** It implements `∂L/∂Q, ∂L/∂K, ∂L/∂V`
 with the chain rule and the **softmax Jacobian trick**: the full Jacobian
@@ -196,7 +203,7 @@ while the scaled version stays flat at **0.125**.
 
 ---
 
-## Part 4 — Step 2: the architecture (`transformer.py`)
+## Part 4 — Step 2: the architecture (`src/transformer/model.py`)
 
 Each component is ~20–50 self-contained lines. The model is the full
 encoder–decoder from *Attention Is All You Need*:
@@ -232,17 +239,18 @@ deep transformers, solved in 2015, absorbed here for free.
 
 No `nn.MultiheadAttention` — every reshape, transpose, and multiply is
 explicit, so the *shapes are the documentation*. If a shape comment is
-wrong, `deepdive.py` or `rope_gen.py` will refuse to pass silently.
+wrong, `src/transformer/attention.py` or `scripts/verify.py` will refuse to
+pass silently.
 
 ---
 
-## Part 5 — Step 3: train a seq2seq model (`train.py`)
+## Part 5 — Step 3: train a seq2seq model (`scripts/train_seq2seq.py`)
 
 Two toy tasks that are trivial to verify and impossible to memorize:
 
 ```bash
-python train.py --task reverse --epochs 100     # [2,5,1,3] → [3,1,5,2]
-python train.py --task copy    --epochs 100     # [2,5,1,3] → [2,5,1,3]
+python scripts/train_seq2seq.py --task reverse --epochs 100     # [2,5,1,3] → [3,1,5,2]
+python scripts/train_seq2seq.py --task copy    --epochs 100     # [2,5,1,3] → [2,5,1,3]
 ```
 
 What happens, step by step:
@@ -256,7 +264,7 @@ What happens, step by step:
    attention matrix must be lower-triangular.
 4. **Training**: Adam (base lr 1.0 — the Noam scheduler controls the real
    rate) + cross-entropy on non-pad tokens. Best checkpoint saved as
-   `model.pt`.
+   `checkpoints/model.pt`.
 
 Expected behavior (MPS ≈ these numbers):
 
@@ -278,7 +286,7 @@ params; seconds per 10 epochs on MPS, ~1 min on CPU.
 
 ---
 
-## Part 6 — Step 4: decoding strategies (`decoding.py`)
+## Part 6 — Step 4: decoding strategies (`scripts/decode.py`)
 
 **Greedy**: argmax at every step. Fast, but one wrong choice is
 unrecoverable — attention never backtracks.
@@ -289,7 +297,7 @@ beam in **one batched forward pass** and unpicks the flattened `(beam ×
 vocab)` scores; scores live in log space and can be length-normalized.
 
 ```bash
-python decoding.py --task reverse --beam-size 4
+python scripts/decode.py --task reverse --beam-size 4
 ```
 
 ```
@@ -304,11 +312,11 @@ length-normalized).
 
 ---
 
-## Part 7 — Step 5: look inside attention (`visualize.py` / `attention_dump.py`)
+## Part 7 — Step 5: look inside attention (`scripts/visualize.py` / `scripts/attention_dump.py`)
 
 ```bash
-python visualize.py --task reverse     # → plots/*.png heatmaps
-python attention_dump.py               # same data as text matrices
+python scripts/visualize.py --task reverse     # → plots/*.png heatmaps
+python scripts/attention_dump.py               # same data as text matrices
 ```
 
 Six PNGs: encoder self-attention, decoder *masked* self-attention, and
@@ -322,12 +330,12 @@ decoder cross-attention — two layers each, all heads.
   attends to the source token it needs for the current output slot — the
   model "pointing" at its memory.
 - Convention used everywhere: **rows = queries, columns = keys** — matching
-  the canonical `attn_weights[batch, head]` orientation. (`attention_dump.py`
-  labels both axes explicitly.)
+  the canonical `attn_weights[batch, head]` orientation.
+  (`scripts/attention_dump.py` labels both axes explicitly.)
 
 ---
 
-## Part 8 — Step 6: multi-GPU training (`train_dist.py`)
+## Part 8 — Step 6: multi-GPU training (`scripts/train_dist.py`)
 
 A production concern, scaffolded honestly: what if one GPU is not enough?
 
@@ -338,10 +346,10 @@ before every optimizer step. The effective batch becomes
 
 ```bash
 # single process (macOS / CPU smoke test):
-python train_dist.py --task reverse --epochs 20
+python scripts/train_dist.py --task reverse --epochs 20
 
 # multi-GPU box:
-torchrun --nproc_per_node=2 train_dist.py --task reverse --epochs 20
+torchrun --nproc_per_node=2 scripts/train_dist.py --task reverse --epochs 20
 ```
 
 Details worth knowing:
@@ -355,15 +363,15 @@ Details worth knowing:
 
 ---
 
-## Part 9 — Step 7: the mini-GPT (`gpt.py`)
+## Part 9 — Step 7: the mini-GPT (`scripts/gpt.py`)
 
 The decoder-only half of the transformer — no encoder, no cross-attention —
 trained as a **character-level language model** on Shakespeare.
 
 ```bash
-python gpt.py --epochs 30 --save                                 # learned positions → gpt.pt
-python gpt.py --epochs 30 --rope --save --save-path gpt_rope.pt  # RoPE
-python gpt.py --epochs 30 --rope --save --save-path gpt_rope_gqa.pt --kv-heads 2  # GQA
+python scripts/gpt.py --epochs 30 --save                                           # learned positions → checkpoints/gpt.pt
+python scripts/gpt.py --epochs 30 --rope --save --save-path checkpoints/gpt_rope.pt
+python scripts/gpt.py --epochs 30 --rope --save --save-path checkpoints/gpt_rope_gqa.pt --kv-heads 2
 ```
 
 30 epochs over 20,000 random 128-character slices (a few minutes on MPS),
@@ -384,7 +392,7 @@ keeping the best-`val_loss` checkpoint, which stores:
 | `--rope` | off | rotary position embeddings instead of learned |
 | `--kv-heads` | None | GQA: KV heads per layer (must divide `--heads`) |
 | `--save / --load` | off | train-and-save / load-and-sample |
-| `--save-path / --load-path` | gpt.pt | checkpoint file |
+| `--save-path / --load-path` | checkpoints/gpt.pt | checkpoint file |
 | `--prompt / --n-chars / --temperature` | "To be, or not to be" / 400 / 0.8 | sampling |
 | `--top-p` | 1.0 | nucleus sampling mass (1.0 = plain temperature) |
 | `--seed` | None | bit-for-bit reproducible training |
@@ -401,9 +409,9 @@ computed — caching them is a pure win. But there is a famous bug waiting
 here, and this repo's history includes it: **the prefill must run with the
 causal mask**. Without it, early positions attend to the future, their
 hidden states are wrong, and every later cache entry is silently poisoned.
-`rope_gen.py` exists precisely to catch that class of bug.
+`scripts/verify.py` exists precisely to catch that class of bug.
 
-### RoPE in `gpt.py`
+### RoPE in `scripts/gpt.py`
 
 - Q rotates with the full-width table; K's table has width
   `num_kv_heads · d_k` under GQA (falls back to Q's table in full MHA).
@@ -461,15 +469,15 @@ memory becomes long-context capability.
 
 ---
 
-## Part 11 — Step 9: the verification suite (`rope_gen.py`)
+## Part 11 — Step 9: the verification suite (`scripts/verify.py`)
 
 The project's soul. Seven sections; every number printed is *actually
 measured* (the whole suite reruns in under a minute):
 
 ```bash
-python rope_gen.py                                      # learned positions
-python rope_gen.py --rope --ckpt gpt_rope.pt            # RoPE, full attention
-python rope_gen.py --rope --ckpt gpt_rope_gqa.pt        # RoPE + GQA
+python scripts/verify.py                                        # learned positions
+python scripts/verify.py --rope --ckpt checkpoints/gpt_rope.pt  # RoPE, full attention
+python scripts/verify.py --rope --ckpt checkpoints/gpt_rope_gqa.pt  # RoPE + GQA
 ```
 
 | # | what is proven | method | example result |
@@ -490,7 +498,7 @@ a run degrades, it says so in plain sight.
 
 ## Part 12 — Results at a glance
 
-### Seq2seq (`model.pt`, reverse task, 100 epochs)
+### Seq2seq (`checkpoints/model.pt`, reverse task, 100 epochs)
 
 | metric | value |
 |---|---|
@@ -502,14 +510,14 @@ a run degrades, it says so in plain sight.
 
 | checkpoint | positions | heads → KV | params | val loss (best, stored) | perplexity |
 |---|---|---|---|---|---|
-| `gpt.pt` | learned | 4 → 4 | 826,433 | 1.498 † | 4.47 |
-| `gpt_rope.pt` | RoPE | 4 → 4 | 810,049 | 1.5023 | 4.49 |
-| `gpt_rope_gqa.pt` | RoPE | 4 → 2 | 744,001 | 1.5339 | 4.64 |
+| `checkpoints/gpt.pt` | learned | 4 → 4 | 826,433 | 1.498 † | 4.47 |
+| `checkpoints/gpt_rope.pt` | RoPE | 4 → 4 | 810,049 | 1.5023 | 4.49 |
+| `checkpoints/gpt_rope_gqa.pt` | RoPE | 4 → 2 | 744,001 | 1.5339 | 4.64 |
 
-† `gpt.pt` predates checkpoint metadata; its val loss was measured
-independently (same eval recipe as training). Reproduce any row with
-`--seed N` for bit-reproducibility (e.g. `gpt.py --epochs 30 --rope
---seed 0 --save`).
+† `checkpoints/gpt.pt` predates checkpoint metadata; its val loss was
+measured independently (same eval recipe as training). Reproduce any row
+with `--seed N` for bit-reproducibility (e.g. `scripts/gpt.py --epochs 30
+--rope --seed 0 --save`).
 
 ---
 
@@ -522,14 +530,14 @@ heatmap, GPT sampling, KV-cache equivalence, RoPE's Toeplitz property,
 
 ```bash
 source venv/bin/activate
-pip install jupyter ipykernel nbformat
-python -m ipykernel install --user      # register the kernel
+pip install -r requirements.txt      # includes jupyter/ipykernel/nbformat
+python -m ipykernel install --user   # register the kernel
 jupyter notebook notebooks/
 ```
 
 The notebook is generated from `build_notebook.py` (keeps the JSON
-canonical; `python3 build_notebook.py` regenerates it) and has been
-executed end-to-end with zero errors on this repo's checkpoints.
+canonical; `python3 build_notebook.py --execute` also runs every cell) and
+has been executed end-to-end with zero errors on this repo's checkpoints.
 
 ---
 
@@ -537,13 +545,13 @@ executed end-to-end with zero errors on this repo's checkpoints.
 
 | symptom | cause & fix |
 |---|---|
-| `module '__main__' has no attribute 'CharTokenizer'` | checkpoints pickle the tokenizer as `__main__.CharTokenizer`; any loader must import (or define) `CharTokenizer` *in its own namespace* before `torch.load`. `rope_gen.py` and the notebook both do this — copy the pattern for new loaders. |
-| `gpt_rope.pt was trained with RoPE — pass --rope to load it` | positional-style mismatch between CLI flag and checkpoint; `gpt.py` detects both directions and says so instead of dying inside `load_state_dict`. |
-| `Missing key(s) in state_dict: pos_embedding.weight` | loaded a learned-positions checkpoint as RoPE (or vice versa) outside `gpt.py`. Match `--rope` to the checkpoint. |
+| `module '__main__' has no attribute 'CharTokenizer'` | checkpoints pickle the tokenizer as `__main__.CharTokenizer`; any loader must import (or define) `CharTokenizer` *in its own namespace* before `torch.load`. `scripts/verify.py` and the notebook both do this — copy the pattern for new loaders. |
+| `gpt_rope.pt was trained with RoPE — pass --rope to load it` | positional-style mismatch between CLI flag and checkpoint; `scripts/gpt.py` detects both directions and says so instead of dying inside `load_state_dict`. |
+| `Missing key(s) in state_dict: pos_embedding.weight` | loaded a learned-positions checkpoint as RoPE (or vice versa) outside `scripts/gpt.py`. Match `--rope` to the checkpoint. |
 | always falls back to CPU | `torch.backends.mps.is_available()` is false on that machine; CPU is fine at these sizes. |
-| `torchrun` not found / DDP errors on macOS | `train_dist.py` falls back to single-process without CUDA; on a multi-GPU box install the CUDA torch build and use `torchrun --nproc_per_node=N`. |
+| `torchrun` not found / DDP errors on macOS | `scripts/train_dist.py` falls back to single-process without CUDA; on a multi-GPU box install the CUDA torch build and use `torchrun --nproc_per_node=N`. |
 | numbers drift between runs | sampling demos seed before *both* paths (`torch.manual_seed(n)`); for training use `--seed` for bit-reproducibility. |
-| blank plots | `model.pt` must exist — run `python train.py --task reverse --epochs 100` first. |
+| blank plots | `checkpoints/model.pt` must exist — run `python scripts/train_seq2seq.py --task reverse --epochs 100` first. |
 
 ---
 
@@ -559,13 +567,13 @@ enough for fp32, tight enough to catch real bugs.
 **Temperature vs top-p?** Temperature reshapes the softmax via
 `logits/τ` — lower τ = sharper = greedier. Top-p (nucleus) keeps only the
 smallest set of tokens whose cumulative probability exceeds `p`, then
-re-normalizes — it trims the long tail without flattening the head. `gpt.py`
-implements both; τ=0.8, p=0.9 is a sane starting point.
+re-normalizes — it trims the long tail without flattening the head.
+`scripts/gpt.py` implements both; τ=0.8, p=0.9 is a sane starting point.
 
 **RoPE or learned embeddings?** Learned: slightly better exactly at the
-training window (`gpt.pt` is the best val here). RoPE: infinitely extensible
-and what modern models use — length extrapolation is its whole point. At
-production scale there's no contest; RoPE or a descendant wins.
+training window (`checkpoints/gpt.pt` is the best val here). RoPE: infinitely
+extensible and what modern models use — length extrapolation is its whole
+point. At production scale there's no contest; RoPE or a descendant wins.
 
 **Why post-norm (`norm(x + attn(x))`) instead of pre-norm?** This is the
 2017 paper's literal arrangement. Modern practice moved to pre-norm
@@ -610,14 +618,15 @@ make the change, then *prove* it (equivalence check) or *measure* the delta
    speed *and* the val-loss delta vs fp32 — an honest precision evaluation.
 8. **NTK-aware / linear scaling for long context** — rescale RoPE
    frequencies to reach 512-token windows without retraining from scratch;
-   extend §5 of `rope_gen.py` to compare 128 vs 512 behavior.
+   extend §5 of `scripts/verify.py` to compare 128 vs 512 behavior.
 9. **BPE tokenizer** — byte-pair encoding instead of characters, reusing
    the same `GPT` (vocab grows to a few hundred; the model gains "words").
 10. **Eval harness** — a fixed validation split and a small
     `bench.py` printing val/ppl/sample for every checkpoint: the Part 12
     table, automated.
-11. **Beam search for `gpt.py`** — port `decoding.py`'s batched beam as
-    `--beam`; greedy vs beam on characters with a best-path comparison.
+11. **Beam search for `scripts/gpt.py`** — port `scripts/decode.py`'s
+    batched beam as `--beam`; greedy vs beam on characters with a best-path
+    comparison.
 
 **Advanced (research-shaped)**
 
@@ -662,12 +671,12 @@ rerun the suite, and the table tells you the truth.
 - Vaswani et al., *Attention Is All You Need* (2017) — `1706.03762`; the
   architecture, Noam schedule, positional encodings.
 - Su et al., *RoFormer: Enhanced Transformer with Rotary Position Embedding*
-  (2021) — RoPE; what makes §1 and §5 of `rope_gen.py` true.
+  (2021) — RoPE; what makes §1 and §5 of `scripts/verify.py` true.
 - Ainslie et al., *GQA: Training Generalized Multi-Query Transformer Models
   from Multi-Head Checkpoints* (2023) — Grouped Query Attention, Part 10.
 - Holtzman et al., *The Curious Case of Neural Text Degeneration* (2019) —
-  nucleus (top-p) sampling, implemented in `gpt.py`.
-- Karpathy, *nanoGPT* — the pedagogical ancestor of `gpt.py`'s training
-  setup (data, block sizes, checkpointing ideas).
+  nucleus (top-p) sampling, implemented in `scripts/gpt.py`.
+- Karpathy, *nanoGPT* — the pedagogical ancestor of `scripts/gpt.py`'s
+  training setup (data, block sizes, checkpointing ideas).
 - The PyTorch documentation on `MultiHeadAttention`, `DistributedDataParallel`,
   and `torch.backends.mps` — the only external APIs this project touches.

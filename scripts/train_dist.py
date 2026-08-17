@@ -7,14 +7,17 @@ Result: effective batch = batch_size * world_size, and each step trains as if
 on a single bigger machine.
 
 Run on a multi-GPU box (or CPU smoke test with gloo):
-    torchrun --nproc_per_node=2 train_dist.py --task reverse --epochs 3
+    torchrun --nproc_per_node=2 scripts/train_dist.py --task reverse --epochs 3
 
     # single process, no torchrun (falls back to plain training):
-    python train_dist.py --task reverse --epochs 3
+    python scripts/train_dist.py --task reverse --epochs 3
 """
 
 import argparse
 import os
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 
 import torch
 import torch.distributed as dist
@@ -22,8 +25,8 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 
-from transformer import Transformer, create_masks, NoamSchedule
-from train import DATASETS, PAD_TOKEN
+from transformer.model import Transformer, create_masks, NoamSchedule  # noqa: E402
+from transformer.trainer import DATASETS, PAD_TOKEN  # noqa: E402
 
 NUM_GPUS_SIM = 2  # used only by the raw-init fallback for testing
 
