@@ -3,6 +3,7 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![PyTorch 2.x](https://img.shields.io/badge/pytorch-2.x-ee4c2c.svg)](https://pytorch.org)
 [![Platforms](https://img.shields.io/badge/platforms-macOS%20MPS%20%7C%20Linux%20CUDA%20%7C%20CPU-lightgrey.svg)]()
+[![CI](https://github.com/Priyansh-100/TensorForge/actions/workflows/ci.yml/badge.svg)](https://github.com/Priyansh-100/TensorForge/actions/workflows/ci.yml)
 [![from scratch](https://img.shields.io/badge/from_scratch-no%20nn.Transformer-success.svg)](src/transformer/model.py)
 
 **A complete transformer written line-by-line, verified numerically at every
