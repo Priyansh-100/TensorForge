@@ -124,49 +124,50 @@ def test_kv_cache_prefill_bit_identical():
 
 
 def test_gqa_step_and_grouping():
-    """GQA: cached one-token step within tolerance; vectorized grouping matches
-    a hand-rolled per-group loop."""
-    loaded = _load_gpt("gpt_rope_gqa.pt")
-    if loaded is None:
-        return
-    model, tokenizer = loaded
-    idx = torch.randint(0, tokenizer.vocab_size, (1, 12), dtype=torch.long)
-    with torch.no_grad():
-        mask = create_look_ahead_mask(idx.size(1))
-        naive = model(idx, mask)
-        caches = [None] * len(model.blocks)
-        x, caches = model._cached_forward(idx, caches, 0, mask)
-        nxt = naive[:, -1:].argmax(-1)
-        x, caches = model._cached_forward(nxt, caches, 12)
-        step = model.lm_head(model.ln_f(x))
-        seq = torch.cat([idx, nxt], dim=1)
-        naive_step = model(seq, create_look_ahead_mask(13))[:, -1:]
-    assert (step - naive_step).abs().max().item() < 1e-4, "GQA cached step mismatch"
+    """GQA/MQA: cached one-token step within tolerance; vectorized grouping
+    matches a hand-rolled per-group loop."""
+    for ckpt_name, kv_heads in (("gpt_rope_gqa.pt", 2), ("gpt_rope_mqa.pt", 1)):
+        loaded = _load_gpt(ckpt_name)
+        if loaded is None:
+            continue
+        model, tokenizer = loaded
+        idx = torch.randint(0, tokenizer.vocab_size, (1, 12), dtype=torch.long)
+        with torch.no_grad():
+            mask = create_look_ahead_mask(idx.size(1))
+            naive = model(idx, mask)
+            caches = [None] * len(model.blocks)
+            x, caches = model._cached_forward(idx, caches, 0, mask)
+            nxt = naive[:, -1:].argmax(-1)
+            x, caches = model._cached_forward(nxt, caches, 12)
+            step = model.lm_head(model.ln_f(x))
+            seq = torch.cat([idx, nxt], dim=1)
+            naive_step = model(seq, create_look_ahead_mask(13))[:, -1:]
+        assert (step - naive_step).abs().max().item() < 1e-4, f"{ckpt_name}: cached step mismatch"
 
-    attn = model.blocks[0].self_attn
-    assert attn.num_kv_heads == 2 and model.num_heads == 4
+        attn = model.blocks[0].self_attn
+        assert attn.num_kv_heads == kv_heads and model.num_heads == 4
 
-    # group-loop reference: head i uses KV head i // group_size
-    torch.manual_seed(0)
-    xr = torch.randn(1, 12, attn.d_model)
-    fast = attn(xr, xr, xr, mask, rope_cos=model.cos[:12], rope_sin=model.sin[:12],
-                rope_cos_k=model.cos_k[:12], rope_sin_k=model.sin_k[:12])
-    B, T, _ = xr.shape
-    q = apply_rope(attn.W_q(xr), model.cos[:12].unsqueeze(0), model.sin[:12].unsqueeze(0))
-    k = apply_rope(attn.W_k(xr), model.cos_k[:12].unsqueeze(0), model.sin_k[:12].unsqueeze(0))
-    v = attn.W_v(xr)
-    q = q.view(B, T, attn.num_heads, attn.d_k).transpose(1, 2)
-    k = k.view(B, T, attn.num_kv_heads, attn.d_kv).transpose(1, 2)
-    v = v.view(B, T, attn.num_kv_heads, attn.d_kv).transpose(1, 2)
-    heads = []
-    for i in range(attn.num_heads):
-        j = i // attn.group_size
-        scores = q[:, i] @ k[:, j].transpose(-2, -1) / math.sqrt(attn.d_k)
-        scores = scores.masked_fill(~mask.squeeze(1), float("-inf"))
-        heads.append(F.softmax(scores, dim=-1) @ v[:, j])
-    ref = attn.W_o(torch.stack(heads, dim=1).transpose(1, 2).contiguous().view(B, T, attn.d_model))
-    assert (fast - ref).abs().max().item() < 1e-4, "GQA grouping mismatch"
-    print("  GQA cached step + group-loop equivalence: OK")
+        # group-loop reference: head i uses KV head i // group_size
+        torch.manual_seed(0)
+        xr = torch.randn(1, 12, attn.d_model)
+        fast = attn(xr, xr, xr, mask, rope_cos=model.cos[:12], rope_sin=model.sin[:12],
+                    rope_cos_k=model.cos_k[:12], rope_sin_k=model.sin_k[:12])
+        B, T, _ = xr.shape
+        q = apply_rope(attn.W_q(xr), model.cos[:12].unsqueeze(0), model.sin[:12].unsqueeze(0))
+        k = apply_rope(attn.W_k(xr), model.cos_k[:12].unsqueeze(0), model.sin_k[:12].unsqueeze(0))
+        v = attn.W_v(xr)
+        q = q.view(B, T, attn.num_heads, attn.d_k).transpose(1, 2)
+        k = k.view(B, T, attn.num_kv_heads, attn.d_kv).transpose(1, 2)
+        v = v.view(B, T, attn.num_kv_heads, attn.d_kv).transpose(1, 2)
+        heads = []
+        for i in range(attn.num_heads):
+            j = i // attn.group_size
+            scores = q[:, i] @ k[:, j].transpose(-2, -1) / math.sqrt(attn.d_k)
+            scores = scores.masked_fill(~mask.squeeze(1), float("-inf"))
+            heads.append(F.softmax(scores, dim=-1) @ v[:, j])
+        ref = attn.W_o(torch.stack(heads, dim=1).transpose(1, 2).contiguous().view(B, T, attn.d_model))
+        assert (fast - ref).abs().max().item() < 1e-4, f"{ckpt_name}: grouping mismatch"
+    print("  GQA/MQA cached step + group-loop equivalence: OK")
 
 
 def test_length_extrapolation():
