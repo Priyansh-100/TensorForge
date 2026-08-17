@@ -330,14 +330,15 @@ def demo_gqa(device):
 
 def demo_mha_vs_gqa(device):
     """Same architecture, same training recipe — only the KV head count differs.
-    gpt_rope.pt is full MHA (4/4), gpt_rope_gqa.pt is GQA (4/2). What the 2×
-    smaller cache actually buys: memory and decode speed, at ~0 quality cost."""
+    gpt_rope.pt is full MHA (4/4), gpt_rope_gqa.pt is GQA (4/2), gpt_rope_mqa.pt
+    is MQA (4/1). What the smaller caches actually buy: memory, at ~0 quality cost."""
     print()
     print("=" * 70)
-    print("7. Trained head-to-head: full MHA vs GQA (gpt_rope.pt / gpt_rope_gqa.pt)")
+    print("7. Trained head-to-head: full MHA vs GQA vs MQA")
     print("=" * 70)
     paths = {"full MHA": (os.path.join(CKPT, "gpt_rope.pt"), None),
-             "GQA 4→2": (os.path.join(CKPT, "gpt_rope_gqa.pt"), 2)}
+             "GQA 4→2": (os.path.join(CKPT, "gpt_rope_gqa.pt"), 2),
+             "MQA 4→1": (os.path.join(CKPT, "gpt_rope_mqa.pt"), 1)}
     models: dict[str, GPT] = {}
     for tag, (path, kv) in paths.items():
         try:
@@ -369,7 +370,7 @@ def demo_mha_vs_gqa(device):
     losses = {tag: v for tag, (_, _, v) in models.items()}
     print("  quality: " + " vs ".join(
         f"{tag} ppl {math.exp(v):.2f}" for tag, v in losses.items() if v is not None) +
-        " — the half-size cache costs ~nothing")
+        " — smaller caches cost ~nothing at this scale")
 
 
 if __name__ == "__main__":
