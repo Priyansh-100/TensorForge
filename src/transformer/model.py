@@ -48,10 +48,11 @@ def scaled_dot_product_attention(
     K: torch.Tensor,  # (batch, heads, seq_len, d_k)
     V: torch.Tensor,  # (batch, heads, seq_len, d_k)
     mask: torch.Tensor | None = None,
-) -> torch.Tensor:
+) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Attention(Q, K, V) = softmax(Q K^T / sqrt(d_k)) V
     mask: True = allowed to attend, False = masked out
+    Returns (output, attention_weights).
     """
     d_k = Q.size(-1)
     scores = torch.matmul(Q, K.transpose(-2, -1)) / math.sqrt(d_k)
@@ -121,7 +122,9 @@ class MultiHeadAttention(nn.Module):
         assert d_model % num_heads == 0, "d_model must be divisible by num_heads"
         if num_kv_heads is None:
             num_kv_heads = num_heads
-        assert num_heads % num_kv_heads == 0, "num_heads must be a multiple of num_kv_heads"
+        if num_heads % num_kv_heads != 0:
+            raise ValueError(f"num_heads ({num_heads}) must be a multiple of "
+                             f"num_kv_heads ({num_kv_heads})")
 
         self.d_model = d_model
         self.num_heads = num_heads
@@ -176,7 +179,7 @@ class MultiHeadAttention(nn.Module):
 
         # RoPE: rotate in projected space (K space is smaller under GQA, so its
         # rotation table differs from Q's — the caller supplies both).
-        if rope_cos is not None:
+        if rope_cos is not None and rope_sin is not None:
             Q = apply_rope(Q, rope_cos.unsqueeze(0), rope_sin.unsqueeze(0))
             k_cos = rope_cos_k if rope_cos_k is not None else rope_cos
             k_sin = rope_sin_k if rope_sin_k is not None else rope_sin

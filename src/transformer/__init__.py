@@ -6,6 +6,7 @@ Modules:
                  positional encoding, Noam schedule, encoder/decoder).
     gpt        — decoder-only mini-GPT: CharTokenizer, CharDataset, GPT with
                  learned/RoPE positions, GQA, KV-cache generation, training.
+    bpe        — byte-level BPE tokenizer from scratch (GPT-2 style).
     attention  — attention math verified from first principles (manual
                  forward/backward vs autograd, softmax saturation demo).
     trainer    — seq2seq datasets (reverse/copy), training loop, greedy decode.
@@ -36,6 +37,8 @@ from transformer.gpt import (
     _sample_token,
 )
 
+from transformer.bpe import BPETokenizer
+
 # Compatibility: checkpoints trained under the old flat layout pickle the
 # tokenizer class with module name "gpt" (gpt.py as a top-level module).
 # Keep that name resolvable so torch.load finds CharTokenizer everywhere.
@@ -45,7 +48,7 @@ from transformer import gpt as _gpt_module
 _sys.modules.setdefault("gpt", _gpt_module)
 del _sys, _gpt_module
 
-from transformer.trainer import (
+from transformer.trainer import (  # noqa: E402
     Seq2SeqDataset,
     ReverseDataset,
     CopyDataset,
@@ -77,6 +80,7 @@ __all__ = [
     "CharTokenizer",
     "CharDataset",
     "_sample_token",
+    "BPETokenizer",
     "Seq2SeqDataset",
     "ReverseDataset",
     "CopyDataset",

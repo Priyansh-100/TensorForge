@@ -10,6 +10,8 @@ CLI entry point: scripts/gpt.py
 """
 
 import math
+import time
+from contextlib import nullcontext
 
 import torch
 import torch.nn as nn
@@ -54,8 +56,10 @@ class CharDataset(Dataset):
         return self.num_pairs
 
     def __getitem__(self, _):
-        # Random start position so every epoch sees different slices
-        idx = torch.randint(0, len(self.data) - self.block_size - 1, ())
+        # Random start position so every epoch sees different slices.
+        # A corpus shorter than block_size+2 would collapse randint's range.
+        hi = len(self.data) - self.block_size - 1
+        idx = torch.randint(0, max(hi, 1), ())
         x = self.data[idx : idx + self.block_size]
         y = self.data[idx + 1 : idx + self.block_size + 1]
         return x, y
@@ -144,6 +148,7 @@ class GPT(nn.Module):
         dropout: float = 0.1,
         rope: bool = False,
         num_kv_heads: int | None = None,
+        tie_weights: bool = False,
     ):
         super().__init__()
         self.token_embedding = nn.Embedding(vocab_size, d_model)
@@ -167,6 +172,14 @@ class GPT(nn.Module):
         )
         self.ln_f = nn.LayerNorm(d_model)
         self.lm_head = nn.Linear(d_model, vocab_size)
+
+        self.tie_weights = tie_weights
+        if tie_weights:
+            # GPT-2 style weight tying: the embedding and the output head are the
+            # SAME matrix — the model only learns one set of token vectors, used
+            # both as input embedding and output logits. Saves vocab·d_model
+            # parameters; usually a small quality bump.
+            self.lm_head.weight = self.token_embedding.weight
 
         self.max_len = max_len
         self.num_heads = num_heads
@@ -305,6 +318,29 @@ class GPT(nn.Module):
 # ---------------------------------------------------------------------------
 
 
+class _TBLogger:
+    """Optional TensorBoard sink. Import is lazy so the core package never
+    depends on the `tensorboard` pip package — logging just turns off with a
+    note when it isn't installed."""
+
+    def __init__(self, log_dir: str):
+        self.writer = None
+        try:
+            from torch.utils.tensorboard import SummaryWriter
+
+            self.writer = SummaryWriter(log_dir)
+        except ImportError:
+            print(f"  tensorboard not installed — `pip install tensorboard` to log to {log_dir}")
+
+    def add_scalars(self, tag: str, values: dict, step: int):
+        if self.writer is not None:
+            self.writer.add_scalars(tag, values, step)
+
+    def close(self):
+        if self.writer is not None:
+            self.writer.close()
+
+
 def train(
     tokenizer: CharTokenizer,
     train_data: torch.Tensor,
@@ -321,6 +357,13 @@ def train(
     save_path: str = "gpt.pt",
     num_kv_heads: int | None = None,
     seed: int | None = None,
+    amp: bool = False,
+    grad_accum: int = 1,
+    compile_model: bool = False,
+    tb_log: str | None = None,
+    num_pairs: int = 20000,
+    num_val_pairs: int = 2000,
+    tie_weights: bool = False,
 ) -> GPT:
     device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
     print(f"Using device: {device}")
@@ -338,11 +381,28 @@ def train(
         max_len=block_size,
         rope=rope,
         num_kv_heads=num_kv_heads,
+        tie_weights=tie_weights,
     ).to(device)
     print(f"Model parameters: {model.count_params():,}")
 
-    train_ds = CharDataset(train_data, block_size, num_pairs=20000)
-    val_ds = CharDataset(val_data, block_size, num_pairs=2000)
+    # torch.compile: traced/optimized kernels (Inductor). No API change.
+    if compile_model:
+        try:
+            model = torch.compile(model)  # type: ignore[assignment]
+            print("  torch.compile: ON")
+        except Exception as e:  # e.g. unsupported backend on some MPS builds
+            print(f"  torch.compile unavailable: {e}")
+
+    # AMP: fp16 autocast + GradScaler. Only CUDA/MPS have a fp16 path here.
+    use_amp = amp and device.type in ("cuda", "mps")
+    if amp and not use_amp:
+        print("  AMP: fp16 autocast needs CUDA or MPS — running in fp32 on CPU")
+    scaler = torch.amp.GradScaler(device.type) if use_amp else None
+
+    logger = _TBLogger(tb_log) if tb_log else None
+
+    train_ds = CharDataset(train_data, block_size, num_pairs=num_pairs)
+    val_ds = CharDataset(val_data, block_size, num_pairs=num_val_pairs)
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=True)
 
@@ -353,21 +413,33 @@ def train(
     # No padding anywhere → mask is always the causal one
     mask = create_look_ahead_mask(block_size).to(device)
 
+    toks_per_step = batch_size * block_size
     best_val = float("inf")
+    step = 0
+    t_start = time.time()
     for epoch in range(1, epochs + 1):
         model.train()
         total_loss = 0.0
-        for x, y in train_loader:
+        optimizer.zero_grad()
+        for i, (x, y) in enumerate(train_loader, 1):
             x, y = x.to(device), y.to(device)
-            optimizer.zero_grad()
-            logits = model(x, mask)
-            loss = criterion(logits.view(-1, logits.size(-1)), y.view(-1))
-            loss.backward()
-            optimizer.step()
-            scheduler.step()
-            total_loss += loss.item()
+            with torch.autocast(device_type=device.type, dtype=torch.float16) if use_amp else nullcontext():
+                logits = model(x, mask)
+                loss = criterion(logits.view(-1, logits.size(-1)), y.view(-1)) / grad_accum
+            scaler.scale(loss).backward() if scaler is not None else loss.backward()
 
-        # Validation (no dropout, no grad)
+            if i % grad_accum == 0:
+                if scaler is not None:
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    optimizer.step()
+                scheduler.step()
+                optimizer.zero_grad()
+                step += 1
+            total_loss += loss.item() * grad_accum
+
+        # Validation (no dropout, no grad, fp32 for stable metrics)
         model.eval()
         val_loss = 0.0
         with torch.no_grad():
@@ -380,7 +452,12 @@ def train(
         avg_val = val_loss / len(val_loader)
         ppl = math.exp(avg_val)
         if epoch % 10 == 0 or epoch == 1:
-            print(f"Epoch {epoch:3d} | train {avg_train:.4f} | val {avg_val:.4f} | perplexity {ppl:.2f}")
+            lr_now = optimizer.param_groups[0]["lr"]
+            print(f"Epoch {epoch:3d} | train {avg_train:.4f} | val {avg_val:.4f} | perplexity {ppl:.2f} | lr {lr_now:.2e}")
+
+        if logger is not None:
+            logger.add_scalars("train", {"loss": avg_train, "lr": optimizer.param_groups[0]["lr"]}, epoch)
+            logger.add_scalars("val", {"loss": avg_val, "perplexity": ppl}, epoch)
 
         if save and avg_val < best_val:
             best_val = avg_val
@@ -388,7 +465,11 @@ def train(
                         "val_loss": best_val, "num_kv_heads": model.num_kv_heads}, save_path)
             print(f"  saved checkpoint ({save_path}, val {avg_val:.4f})")
 
-    print(f"Training done. Best val loss: {best_val:.4f}")
+    if logger is not None:
+        logger.close()
+    elapsed = max(time.time() - t_start, 1e-9)
+    print(f"Training done. Best val loss: {best_val:.4f} "
+          f"({len(train_loader) * epochs * toks_per_step / elapsed:,.0f} tok/s)")
     return model
 
 

@@ -12,6 +12,7 @@ scripts/train_dist.py (DistributedDataParallel).
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
+from contextlib import nullcontext
 
 from transformer.model import Transformer, create_masks, create_look_ahead_mask, NoamSchedule
 
@@ -68,7 +69,8 @@ DATASETS = {"reverse": ReverseDataset, "copy": CopyDataset}
 # Training
 # ---------------------------------------------------------------------------
 
-def train(task: str, epochs: int, save_path: str = "model.pt"):
+def train(task: str, epochs: int, save_path: str = "model.pt",
+          amp: bool = False, grad_accum: int = 1):
     device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
     print(f"Using device: {device}")
 
@@ -104,22 +106,35 @@ def train(task: str, epochs: int, save_path: str = "model.pt"):
     optimizer = torch.optim.Adam(model.parameters(), lr=1.0)
     scheduler = NoamSchedule(optimizer, d_model=D_MODEL, warmup_steps=400)
 
+    use_amp = amp and device.type in ("cuda", "mps")
+    if amp and not use_amp:
+        print("  AMP: fp16 autocast needs CUDA or MPS — running in fp32 on CPU")
+    scaler = torch.amp.GradScaler(device.type) if use_amp else None
+
     model.train()
     for epoch in range(1, epochs + 1):
         total_loss = 0.0
-        for src, tgt_input, tgt_output in train_loader:
+        optimizer.zero_grad()
+        for i, (src, tgt_input, tgt_output) in enumerate(train_loader, 1):
             src, tgt_input, tgt_output = src.to(device), tgt_input.to(device), tgt_output.to(device)
 
             src_mask, tgt_mask = create_masks(src, tgt_input, pad_idx)
 
-            optimizer.zero_grad()
-            logits = model(src, tgt_input, src_mask, tgt_mask)
-            loss = criterion(logits.view(-1, logits.size(-1)), tgt_output.view(-1))
-            loss.backward()
-            optimizer.step()
-            scheduler.step()
+            with torch.autocast(device_type=device.type, dtype=torch.float16) if use_amp else nullcontext():
+                logits = model(src, tgt_input, src_mask, tgt_mask)
+                loss = criterion(logits.view(-1, logits.size(-1)), tgt_output.view(-1)) / grad_accum
+            scaler.scale(loss).backward() if scaler is not None else loss.backward()
 
-            total_loss += loss.item()
+            if i % grad_accum == 0:
+                if scaler is not None:
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    optimizer.step()
+                scheduler.step()
+                optimizer.zero_grad()
+
+            total_loss += loss.item() * grad_accum
 
         if epoch % 10 == 0:
             avg_loss = total_loss / len(train_loader)
