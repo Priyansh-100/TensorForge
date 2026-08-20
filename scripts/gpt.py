@@ -22,6 +22,7 @@ CKPT = os.path.join(ROOT, "checkpoints")
 import torch  # noqa: E402
 
 from transformer.gpt import GPT, CharTokenizer, train, sample  # noqa: E402
+from transformer.bpe import BPETokenizer  # noqa: E402
 # CharTokenizer must be in THIS namespace: checkpoints pickle it as
 # `__main__.CharTokenizer`, so torch.load resolves the class against the
 # importing module — removing this import breaks loading.
@@ -52,6 +53,24 @@ if __name__ == "__main__":
                         help="nucleus sampling mass (default 1.0 = plain temperature sampling)")
     parser.add_argument("--seed", type=int, default=None,
                         help="seed RNGs for reproducible training")
+    parser.add_argument("--amp", action="store_true",
+                        help="train with fp16 autocast + GradScaler (CUDA/MPS)")
+    parser.add_argument("--grad-accum", type=int, default=1,
+                        help="accumulate gradients over this many batches before stepping")
+    parser.add_argument("--compile", action="store_true",
+                        help="wrap the model with torch.compile")
+    parser.add_argument("--tb-log", type=str, default=None,
+                        help="log scalars to a TensorBoard dir (needs `pip install tensorboard`)")
+    parser.add_argument("--bpe", action="store_true",
+                        help="use a byte-level BPE tokenizer instead of character-level")
+    parser.add_argument("--bpe-vocab-size", type=int, default=512,
+                        help="BPE vocabulary size (256 base bytes + merges)")
+    parser.add_argument("--tie-weights", action="store_true",
+                        help="share the token embedding and output head (GPT-2 style)")
+    parser.add_argument("--num-pairs", type=int, default=20000,
+                        help="training slices per epoch (bigger = more data per epoch)")
+    parser.add_argument("--num-val-pairs", type=int, default=2000,
+                        help="validation slices per epoch")
     args = parser.parse_args()
 
     if args.load:
@@ -68,8 +87,13 @@ if __name__ == "__main__":
                 f"{args.load_path} was trained with RoPE — pass --rope to load it."
             )
         num_kv_heads = args.kv_heads or ckpt.get("num_kv_heads")
+        # torch.save preserves tensor sharing: a tied checkpoint's embedding and
+        # lm_head entries are the SAME tensor → reconstruct the tying on load.
+        tied = ("lm_head.weight" in ckpt["model"] and "token_embedding.weight" in ckpt["model"]
+                and ckpt["model"]["lm_head.weight"].data_ptr()
+                == ckpt["model"]["token_embedding.weight"].data_ptr())
         model = GPT(vocab_size=tokenizer.vocab_size, max_len=args.block_size,
-                    rope=args.rope, num_kv_heads=num_kv_heads)
+                    rope=args.rope, num_kv_heads=num_kv_heads, tie_weights=tied)
         model.load_state_dict(ckpt["model"])
         sample(model, tokenizer, args.prompt, args.n_chars, args.temperature,
                args.top_p)
@@ -77,8 +101,13 @@ if __name__ == "__main__":
         with open(os.path.join(ROOT, "data", "shakespeare.txt"), "r", encoding="utf-8") as f:
             text = f.read()
 
-        tokenizer = CharTokenizer(text)
-        print(f"Vocab size: {tokenizer.vocab_size} chars")
+        if args.bpe:
+            tokenizer = BPETokenizer(text, vocab_size=args.bpe_vocab_size)
+            print(f"BPE vocab size: {tokenizer.vocab_size} "
+                  f"({tokenizer.vocab_size - 256} merges over 256 base bytes)")
+        else:
+            tokenizer = CharTokenizer(text)
+            print(f"Vocab size: {tokenizer.vocab_size} chars")
 
         data = torch.tensor(tokenizer.encode(text), dtype=torch.long)
         n_val = int(0.1 * len(data))
@@ -91,7 +120,11 @@ if __name__ == "__main__":
             d_model=args.d_model, num_heads=args.heads, d_ff=args.d_ff,
             num_layers=args.layers, batch_size=args.batch_size, save=args.save,
             rope=args.rope, save_path=args.save_path, num_kv_heads=args.kv_heads,
-            seed=args.seed,
+            seed=args.seed, amp=args.amp, grad_accum=args.grad_accum,
+            compile_model=args.compile, tb_log=args.tb_log,
+            num_pairs=args.num_pairs, num_val_pairs=args.num_val_pairs,
+            tie_weights=args.tie_weights,
         )
         print(f"Trained in {time.time() - t0:.1f}s\n")
-        sample(model, tokenizer, args.prompt, args.n_chars, args.temperature)
+        sample(model, tokenizer, args.prompt, args.n_chars, args.temperature,
+               args.top_p)

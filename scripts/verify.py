@@ -33,6 +33,7 @@ import torch.nn.functional as F  # noqa: E402
 
 from transformer.model import precompute_rope, apply_rope, create_look_ahead_mask  # noqa: E402
 from transformer.gpt import GPT, CharTokenizer  # noqa: E402,F401
+from transformer.bpe import BPETokenizer  # noqa: E402
 # CharTokenizer must be in THIS namespace: checkpoints pickle it as
 # `__main__.CharTokenizer`, so torch.load resolves the class against the
 # importing module — removing this import breaks loading.
@@ -373,6 +374,84 @@ def demo_mha_vs_gqa(device):
         " — smaller caches cost ~nothing at this scale")
 
 
+def demo_bpe(device):
+    """BPE tokenizer built from scratch: exact round-trips, stream compression,
+    and a trained BPE GPT compared against the char-level one at equal cost."""
+    print()
+    print("=" * 70)
+    print("8. Byte-level BPE tokenizer (learned merges, from scratch)")
+    print("=" * 70)
+    with open(os.path.join(ROOT, "data", "shakespeare.txt"), "r", encoding="utf-8") as f:
+        text = f.read()
+    tok = BPETokenizer(text, vocab_size=512)
+    s = "To be, or not to be - that is the question."
+    ids = tok.encode(s)
+    print(f"  vocab {tok.vocab_size} = 256 base bytes + {len(tok.merges)} merges")
+    print(f"  round-trip encode→decode: {'OK' if tok.decode(ids) == s else 'FAIL'}")
+    print(f"  '{s}' -> {len(ids)} tokens vs {len(s)} chars ({len(ids)/len(s):.2f} tok/char)")
+    n = 200000
+    full = tok.encode(text[:n])
+    print(f"  corpus (200k chars): {len(full)} tokens = {len(full)/n:.2f} tok/char "
+          f"(char tokenizer: 1.00)")
+    print(f"  top merges: {[(bytes([a]) + bytes([b])).decode('utf-8', 'replace') for a, b in list(tok.merges)[:4]]}")
+
+    bpe_path = os.path.join(CKPT, "gpt_rope_bpe.pt")
+    try:
+        ckpt = torch.load(bpe_path, map_location=device, weights_only=False)
+    except FileNotFoundError:
+        print("  (no trained BPE checkpoint — train one with:")
+        print("   python scripts/gpt.py --epochs 30 --rope --save --bpe "
+              "--save-path checkpoints/gpt_rope_bpe.pt)")
+        return
+
+    bt = ckpt["tokenizer"]
+    bpe_model = GPT(vocab_size=bt.vocab_size, max_len=128, rope=True,
+                    num_kv_heads=ckpt.get("num_kv_heads")).to(device)
+    bpe_model.load_state_dict(ckpt["model"])
+    bpe_model.eval()
+
+    # char-level comparison on the same validation text (loss per CHAR, so the
+    # two tokenizers are directly comparable)
+    val_text = text[-20000:]
+    n_char = len(val_text)
+    block = 128
+    losses = {}
+    for tag, model, tokenizer in (("char (gpt_rope.pt)", None, None), ("BPE (gpt_rope_bpe.pt)", bpe_model, bt)):
+        if tag.startswith("char"):
+            try:
+                c = torch.load(os.path.join(CKPT, "gpt_rope.pt"), map_location=device,
+                               weights_only=False)
+                model = GPT(vocab_size=c["tokenizer"].vocab_size, max_len=128, rope=True,
+                            num_kv_heads=c.get("num_kv_heads")).to(device)
+                model.load_state_dict(c["model"])
+                model.eval()
+                tokenizer = c["tokenizer"]
+            except FileNotFoundError:
+                continue
+        ids = tokenizer.encode(val_text)
+        total, cnt = 0.0, 0
+        with torch.no_grad():
+            for i in range(0, len(ids) - block - 1, block):
+                x = torch.tensor([ids[i:i + block]], dtype=torch.long, device=device)
+                logits = model(x, create_look_ahead_mask(block).to(device))
+                loss = F.cross_entropy(logits.view(-1, logits.size(-1)),
+                                       x.roll(-1, dims=1).view(-1))
+                total += loss.item()
+                cnt += 1
+        if cnt:
+            per_char = (total / cnt) * (len(ids) / n_char)
+            losses[tag] = math.exp(per_char)
+    if losses:
+        print("  same architecture, same recipe — loss measured per CHARACTER:")
+        for tag, ppl in losses.items():
+            print(f"    {tag:22s} char-ppl {ppl:.2f}")
+        if len(losses) == 2:
+            ratio = losses["BPE (gpt_rope_bpe.pt)"] / losses["char (gpt_rope.pt)"]
+            print(f"  → BPE {ratio:.2f}x char-level perplexity "
+                  f"({'better' if ratio < 1 else 'worse'}) at {bt.vocab_size} "
+                  f"tokens vs {losses and 65} chars")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--n-chars", type=int, default=200)
@@ -397,3 +476,4 @@ if __name__ == "__main__":
     demo_length_extrapolation(model, tokenizer, device)
     demo_gqa(device)
     demo_mha_vs_gqa(device)
+    demo_bpe(device)
