@@ -1,0 +1,25 @@
+site_name: TensorForge
+site_description: A verified, from-scratch Transformer and mini-GPT — attention math, DDP, RoPE, GQA/MQA, BPE, AMP, KV caching.
+site_url: https://priyansh-100.github.io/TensorForge/
+repo_url: https://github.com/Priyansh-100/TensorForge
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  palette:
+    scheme: default
+    primary: indigo
+  features:
+    - navigation.top
+    - toc.integrate
+
+markdown_extensions:
+  - admonition
+  - codehilite
+  - tables
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Repo: https://github.com/Priyansh-100/TensorForge
