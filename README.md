@@ -4,7 +4,11 @@
 [![PyTorch 2.x](https://img.shields.io/badge/pytorch-2.x-ee4c2c.svg)](https://pytorch.org)
 [![Platforms](https://img.shields.io/badge/platforms-macOS%20MPS%20%7C%20Linux%20CUDA%20%7C%20CPU-lightgrey.svg)]()
 [![CI](https://github.com/Priyansh-100/TensorForge/actions/workflows/ci.yml/badge.svg)](https://github.com/Priyansh-100/TensorForge/actions/workflows/ci.yml)
+[![Docs](https://github.com/Priyansh-100/TensorForge/actions/workflows/docs.yml/badge.svg)](https://priyansh-100.github.io/TensorForge/)
+[![Coverage](https://codecov.io/gh/Priyansh-100/TensorForge/branch/main/graph/badge.svg)](https://codecov.io/gh/Priyansh-100/TensorForge)
 [![from scratch](https://img.shields.io/badge/from_scratch-no%20nn.Transformer-success.svg)](src/transformer/model.py)
+[![Ruff](https://img.shields.io/badge/lint-ruff-000000.svg)](https://github.com/astral-sh/ruff)
+[![Mypy](https://img.shields.io/badge/typed-mypy-2a6db2.svg)](https://mypy-lang.org)
 
 **A complete transformer written line-by-line, verified numerically at every
 step.** No `nn.Transformer`, no HuggingFace, no black boxes: attention,
@@ -36,11 +40,12 @@ equivalence checks are executable code, not claims.
 - [Part 9 — Step 7: the mini-GPT (`scripts/gpt.py`)](#part-9--step-7-the-mini-gpt-scriptsgptpy)
 - [Part 10 — Step 8: Grouped Query Attention](#part-10--step-8-grouped-query-attention)
 - [Part 11 — Step 9: the verification suite (`scripts/verify.py`)](#part-11--step-9-the-verification-suite-scriptsverifypy)
-- [Part 12 — Results at a glance](#part-12--results-at-a-glance)
-- [Part 13 — Notebooks](#part-13--notebooks)
-- [Part 14 — Troubleshooting](#part-14--troubleshooting)
-- [Part 15 — FAQ](#part-15--faq)
-- [Part 16 — Roadmap: improvements & advancement](#part-16--roadmap-improvements--advancement)
+- [Part 12 — Step 10: BPE tokenizer & training knobs](#part-12--step-10-bpe-tokenizer--training-knobs)
+- [Part 13 — Results at a glance](#part-13--results-at-a-glance)
+- [Part 14 — Notebooks](#part-14--notebooks)
+- [Part 15 — Troubleshooting](#part-15--troubleshooting)
+- [Part 16 — FAQ](#part-16--faq)
+- [Part 17 — Roadmap: improvements & advancement](#part-17--roadmap-improvements--advancement)
 - [Appendix — The verification philosophy](#appendix--the-verification-philosophy)
 - [References](#references)
 
@@ -133,7 +138,8 @@ python src/transformer/attention.py   # ~2 s; see Part 3
 src/transformer/        the library (importable package)
   model.py              core architecture (attention, RoPE, positions, encoder/decoder, masks)
   attention.py          manual attention forward/backward vs torch.autograd (the math proof)
-  gpt.py                mini-GPT: model, training, RoPE, GQA, KV-cache inference
+  gpt.py                mini-GPT: model, training (AMP / grad-accum / compile), GQA, KV-cache inference
+  bpe.py                byte-level BPE tokenizer from scratch (GPT-2 style)
   trainer.py            seq2seq datasets (reverse/copy) + training loop
 scripts/                runnable entry points
   train_seq2seq.py      seq2seq training (reverse / copy tasks)     → checkpoints/model.pt
@@ -141,18 +147,25 @@ scripts/                runnable entry points
   decode.py             greedy vs beam-search decoding on checkpoints/model.pt
   visualize.py          attention heatmaps                          → plots/*.png
   attention_dump.py     same attention weights as readable text
-  gpt.py                mini-GPT CLI: train / sample, RoPE, GQA, KV cache
-  verify.py             the verification harness — 7 proof sections, all runnable
+  gpt.py                mini-GPT CLI: train / sample, RoPE, GQA, BPE, AMP, KV cache
+  verify.py             the verification harness — 8 proof sections, all runnable
+  benchmark.py          training throughput: fp32 vs AMP vs torch.compile  → plots/benchmark.png
+  scale.py              scaling-curve experiment (loss vs model size)      → plots/scaling_curve.png
+  export_onnx.py        export GPT to ONNX, benchmark vs ONNX Runtime       → checkpoints/*.onnx
 tests/
   test_equivalence.py   the proofs as pytest tests (python -m pytest tests)
+  test_bpe.py           BPE round-trip / compression / determinism + training-knob tests
 checkpoints/            trained models
   model.pt              trained seq2seq (reverse task)
   gpt.pt                trained GPT, learned positions
   gpt_rope.pt           trained GPT + RoPE, full attention
   gpt_rope_gqa.pt       trained GPT + RoPE + GQA (4 heads → 2 KV heads)
+  gpt_rope_bpe.pt       trained GPT + RoPE with a byte-level BPE tokenizer
 data/shakespeare.txt    character corpus for the GPT
 notebooks/              interactive versions of the demos
-plots/                  output of visualize.py
+plots/                  output of visualize.py / benchmark.py / scale.py
+docs/                   source of the GitHub Pages site (mkdocs, README mirror)
+.github/                CI, docs deploy, dependabot, issue/PR templates
 venv/                   local Python environment (not part of the project)
 ```
 
@@ -397,6 +410,15 @@ keeping the best-`val_loss` checkpoint, which stores:
 | `--prompt / --n-chars / --temperature` | "To be, or not to be" / 400 / 0.8 | sampling |
 | `--top-p` | 1.0 | nucleus sampling mass (1.0 = plain temperature) |
 | `--seed` | None | bit-for-bit reproducible training |
+| `--amp` | off | fp16 autocast + GradScaler (CUDA/MPS); measures speed vs fp32 |
+| `--grad-accum` | 1 | accumulate N batches per optimizer step (bigger effective batch) |
+| `--compile` | off | wrap the model with `torch.compile` |
+| `--tb-log` | None | log loss/ppl/lr to a TensorBoard dir (`pip install tensorboard`) |
+| `--bpe` | off | byte-level BPE tokenizer instead of characters |
+| `--bpe-vocab-size` | 512 | BPE vocab (256 base bytes + merges) |
+| `--tie-weights` | off | share the token embedding and output head (GPT-2 style) |
+| `--num-pairs` | 20000 | training slices per epoch |
+| `--num-val-pairs` | 2000 | validation slices per epoch |
 
 ### The two inference paths
 
@@ -473,7 +495,7 @@ scale that memory becomes long-context capability.
 
 ## Part 11 — Step 9: the verification suite (`scripts/verify.py`)
 
-The project's soul. Seven sections; every number printed is *actually
+The project's soul. Eight sections; every number printed is *actually
 measured* (the whole suite reruns in under a minute):
 
 ```bash
@@ -491,6 +513,7 @@ python scripts/verify.py --rope --ckpt checkpoints/gpt_rope_gqa.pt  # RoPE + GQA
 | 5 | length extrapolation | RoPE generates past the 128-token window; learned positions refuse with a clear `ValueError` | 170 tokens (42 past the window) |
 | 6 | GQA correctness + cache math | trained checkpoint: prefill/step equality; cache `(1,2,13,32)` small-form vs `(1,4,13,32)` expanded; byte math; hand-rolled group loop | prefill 0.0, step 4.1e-06, loop bit-identical |
 | 7 | trained head-to-head | full MHA vs GQA vs MQA checkpoints: cache bytes at full context, cached-decode tok/s, perplexity | 512→256→128 KiB; ~equal tok/s; ppl 4.49 / 4.64 / 4.55 |
+| 8 | BPE tokenizer (from scratch) | exact encode→decode round-trips; corpus compression; trained BPE GPT vs char GPT at equal *per-character* cost | round-trip OK; 0.51 tok/char; BPE char-ppl ≈ char-ppl |
 
 The *honest* part: thresholds are explicit (prefill `== 0.0`, step `< 1e-4`,
 same-seed text equality) and the numbers printed are whatever they are — if
@@ -498,7 +521,55 @@ a run degrades, it says so in plain sight.
 
 ---
 
-## Part 12 — Results at a glance
+## Part 12 — Step 10: BPE tokenizer & training knobs
+
+**Byte-level BPE** (`src/transformer/bpe.py`) is the tokenizer modern models
+actually use (GPT-2, Llama, tiktoken). It treats the corpus as raw UTF-8
+bytes — 256 base tokens — then repeatedly merges the most frequent adjacent
+pair into a new token until a vocabulary budget is reached. The merge list
+*is* the tokenizer: no unknown tokens, exact decode, real word fragments
+("th", "ing") learned from data.
+
+```bash
+# train a GPT on BPE tokens instead of characters:
+python scripts/gpt.py --epochs 30 --rope --save --bpe --save-path checkpoints/gpt_rope_bpe.pt
+```
+
+Measured on Shakespeare with a 512-token BPE vocab: the corpus drops from
+1.0 to **0.51 tokens/char**, and a BPE GPT reaches roughly the same
+**per-character** perplexity as the character model — with a 4× smaller
+context window for the same information. (§8 of `scripts/verify.py` proves
+round-trips and does the fair per-character comparison.)
+
+**Training knobs** (all verified in `tests/test_bpe.py`):
+
+- `--amp`: fp16 autocast + GradScaler on CUDA/MPS. Measure it:
+  `python scripts/benchmark.py`.
+- `--grad-accum N`: accumulate N batches before each optimizer step — bigger
+  effective batches on small machines (Noam lr stepping stays aligned).
+- `--compile`: `torch.compile(model)` — one line, Inductor kernels.
+- `--tb-log DIR`: TensorBoard scalars (loss/ppl/lr per epoch).
+- `--bpe / --bpe-vocab-size`: tokenizer swap.
+- `--tie-weights`: share the embedding and the output head (GPT-2 style) —
+  `vocab · d_model` fewer parameters, verified in `tests/test_bpe.py`.
+
+**Benchmarks & experiments:**
+
+```bash
+python scripts/benchmark.py    # fp32 vs AMP vs compile vs amp+compile  → plots/benchmark.png
+python scripts/scale.py        # loss vs model size (4 tiny GPTs)       → plots/scaling_curve.png
+python scripts/export_onnx.py  # GPT → ONNX (dynamic batch/seq) + ORT speed test
+```
+
+`scripts/scale.py` is the Chinchilla-style story at toy scale: four GPTs
+(32 → 256 `d_model`) trained on the same data with the same recipe, showing
+validation loss falling as parameters grow. `scripts/export_onnx.py` exports
+`checkpoints/gpt_rope.pt` to ONNX with dynamic batch/sequence axes and
+checks ONNX Runtime logits against PyTorch (`pip install onnx onnxruntime`).
+
+---
+
+## Part 13 — Results at a glance
 
 ### Seq2seq (`checkpoints/model.pt`, reverse task, 100 epochs)
 
@@ -510,21 +581,26 @@ a run degrades, it says so in plain sight.
 
 ### Character GPT (30 epochs, Shakespeare, block 128)
 
-| checkpoint | positions | heads → KV | params | val loss (best, stored) | perplexity |
-|---|---|---|---|---|---|
-| `checkpoints/gpt.pt` | learned | 4 → 4 | 826,433 | 1.498 † | 4.47 |
-| `checkpoints/gpt_rope.pt` | RoPE | 4 → 4 | 810,049 | 1.5023 | 4.49 |
-| `checkpoints/gpt_rope_gqa.pt` | RoPE | 4 → 2 | 744,001 | 1.5339 | 4.64 |
-| `checkpoints/gpt_rope_mqa.pt` | RoPE | 4 → 1 | 710,977 | 1.5143 | 4.55 |
+| checkpoint | positions | tokenizer | heads → KV | params | val loss (best, stored) | perplexity |
+|---|---|---|---|---|---|---|
+| `checkpoints/gpt.pt` | learned | chars | 4 → 4 | 826,433 | 1.498 † | 4.47 |
+| `checkpoints/gpt_rope.pt` | RoPE | chars | 4 → 4 | 810,049 | 1.5023 | 4.49 |
+| `checkpoints/gpt_rope_gqa.pt` | RoPE | chars | 4 → 2 | 744,001 | 1.5339 | 4.64 |
+| `checkpoints/gpt_rope_mqa.pt` | RoPE | chars | 4 → 1 | 710,977 | 1.5143 | 4.55 |
+| `checkpoints/gpt_rope_bpe.pt` | RoPE | BPE-512 | 4 → 4 | 924,928 | 3.0439 ‡ | ~20.7 (per BPE token) |
 
 † `checkpoints/gpt.pt` predates checkpoint metadata; its val loss was
 measured independently (same eval recipe as training). Reproduce any row
 with `--seed N` for bit-reproducibility (e.g. `scripts/gpt.py --epochs 30
 --rope --seed 0 --save`).
 
+‡ BPE checkpoints are not directly comparable with the char rows — their
+tokens carry ~2× the information. `scripts/verify.py` §8 compares both
+models at equal *per-character* cost.
+
 ---
 
-## Part 13 — Notebooks
+## Part 14 — Notebooks
 
 `notebooks/01_transformer_walkthrough.ipynb` is the README's story in
 interactive form: attention weights, the trained seq2seq's cross-attention
@@ -544,7 +620,7 @@ has been executed end-to-end with zero errors on this repo's checkpoints.
 
 ---
 
-## Part 14 — Troubleshooting
+## Part 15 — Troubleshooting
 
 | symptom | cause & fix |
 |---|---|
@@ -558,7 +634,7 @@ has been executed end-to-end with zero errors on this repo's checkpoints.
 
 ---
 
-## Part 15 — FAQ
+## Part 16 — FAQ
 
 **Why is prefill bit-identical (|Δ| = 0.0) but the one-token step only
 < 1e-4?** Prefill literally runs the same computation as the naive forward
@@ -593,7 +669,7 @@ is real (Part 10).
 
 ---
 
-## Part 16 — Roadmap: improvements & advancement
+## Part 17 — Roadmap: improvements & advancement
 
 Ordered beginner-safe → research-grade. Every item fits this repo's spirit:
 make the change, then *prove* it (equivalence check) or *measure* the delta
@@ -601,31 +677,32 @@ make the change, then *prove* it (equivalence check) or *measure* the delta
 
 **Easy (a weekend each)**
 
-1. **Weight tying** — share `token_embedding` and `lm_head` (GPT-2 style).
-   Fewer parameters, usually a small val bump. Verify: same checkpoint
-   loading, compare samples.
-2. **Gradient accumulation** — emulate bigger batches on small machines;
-   makes `--batch-size` a true knob.
+1. ✅ **Weight tying** — done (`--tie-weights`): embedding and output head
+   share one matrix, `vocab · d_model` fewer parameters; round-trip tested.
+2. ✅ **Gradient accumulation** — done (`--grad-accum N`), including
+   alignment with the Noam lr schedule.
 3. **Longer training** — 60 epochs on the same data; val loss keeps falling
    (the model underfits at 30). Watch for the plateau; log it.
 4. **Bigger architecture** — `--heads 8 --layers 6 --d-model 256` is
    already supported; bigger model + more epochs is the single best quality
    lever here.
-5. **`torch.compile(model)`** — one line, safe to demo, measures clean.
+5. ✅ **`torch.compile(model)`** — done (`--compile`); benchmark it with
+   `scripts/benchmark.py`.
 6. **LR curve plot** — graph `NoamSchedule` and confirm the warmup peak
    matches the paper formula.
 
 **Medium**
 
-7. **FP16/BF16 autocast** on the GPT path (MPS handles fp16 well). Report
-   speed *and* the val-loss delta vs fp32 — an honest precision evaluation.
+7. ✅ **FP16/BF16 autocast** — done (`--amp`); `scripts/benchmark.py` prints
+   the fp32-vs-AMP throughput delta, and the tests cover the GradScaler path.
 8. **NTK-aware / linear scaling for long context** — rescale RoPE
    frequencies to reach 512-token windows without retraining from scratch;
    extend §5 of `scripts/verify.py` to compare 128 vs 512 behavior.
-9. **BPE tokenizer** — byte-pair encoding instead of characters, reusing
-   the same `GPT` (vocab grows to a few hundred; the model gains "words").
+9. ✅ **BPE tokenizer** — done (`--bpe`, `src/transformer/bpe.py`); GPT-2
+   style byte-level merges, verified in `scripts/verify.py` §8 and
+   `tests/test_bpe.py`.
 10. **Eval harness** — a fixed validation split and a small
-    `bench.py` printing val/ppl/sample for every checkpoint: the Part 12
+    `bench.py` printing val/ppl/sample for every checkpoint: the Part 13
     table, automated.
 11. **Beam search for `scripts/gpt.py`** — port `scripts/decode.py`'s
     batched beam as `--beam`; greedy vs beam on characters with a best-path
@@ -633,9 +710,8 @@ make the change, then *prove* it (equivalence check) or *measure* the delta
 
 **Advanced (research-shaped)**
 
-12. **MQA / 8→1 checkpoints** — extend §6–7 with `--kv-heads 1`: cache 8×
-    smaller; measure the real val-loss cost and confirm the small-form
-    cache invariant still holds.
+12. **Scaling-curve study** — `scripts/scale.py` trains 4 tiny GPTs and plots
+    loss vs parameters; the next step is 8+ points and a fitted power law.
 13. **Long-context benchmark** — 512-token generation with `--rope`: does
     quality fade gracefully? Plot ppl vs position for honest extrapolation
     curves (the §5 demo, quantified).
@@ -647,7 +723,8 @@ make the change, then *prove* it (equivalence check) or *measure* the delta
     as the actor. The reward signal: "is this line in Shakespeare's style?"
     Everything (reward model, PPO loop) fits the from-scratch philosophy.
 16. **Serving shim** — wrap `generate_cached` in a tiny HTTP/SSE handler;
-    the KV-cache path is already the production-shaped one.
+    the KV-cache path is already the production-shaped one. (An ONNX export
+    is already available via `scripts/export_onnx.py`.)
 
 ---
 
@@ -679,7 +756,14 @@ rerun the suite, and the table tells you the truth.
   from Multi-Head Checkpoints* (2023) — Grouped Query Attention, Part 10.
 - Holtzman et al., *The Curious Case of Neural Text Degeneration* (2019) —
   nucleus (top-p) sampling, implemented in `scripts/gpt.py`.
+- Sennrich, Haddow & Birch, *Neural Machine Translation of Rare Words with
+  Subword Units* (2016) — BPE for tokenization, `src/transformer/bpe.py`.
+- Radford et al., *Language Models are Unsupervised Multitask Learners*
+  (2019) — GPT-2's byte-level BPE and weight tying, Part 12.
+- Kaplan et al., *Scaling Laws for Neural Language Models* (2020) — the
+  loss-vs-parameters story behind `scripts/scale.py`.
 - Karpathy, *nanoGPT* — the pedagogical ancestor of `scripts/gpt.py`'s
   training setup (data, block sizes, checkpointing ideas).
 - The PyTorch documentation on `MultiHeadAttention`, `DistributedDataParallel`,
-  and `torch.backends.mps` — the only external APIs this project touches.
+  `torch.compile`, and `torch.backends.mps` — the only external APIs this
+  project touches.
