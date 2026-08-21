@@ -15,7 +15,8 @@ theme:
 
 markdown_extensions:
   - admonition
-  - codehilite
+  - pymdownx.highlight
+  - pymdownx.superfences
   - tables
   - toc:
       permalink: true
