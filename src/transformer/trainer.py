@@ -110,6 +110,10 @@ def train(task: str, epochs: int, save_path: str = "model.pt",
     if amp and not use_amp:
         print("  AMP: fp16 autocast needs CUDA or MPS — running in fp32 on CPU")
     scaler = torch.amp.GradScaler(device.type) if use_amp else None
+    if grad_accum > 1 and len(train_loader) % grad_accum != 0:
+        leftover = len(train_loader) % grad_accum
+        print(f"  note: {leftover} batch(es) per epoch fall outside the "
+              f"grad_accum {grad_accum} group and are dropped (never stepped)")
 
     model.train()
     for epoch in range(1, epochs + 1):

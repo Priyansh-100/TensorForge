@@ -405,6 +405,10 @@ def train(
     val_ds = CharDataset(val_data, block_size, num_pairs=num_val_pairs)
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=True)
+    if grad_accum > 1 and len(train_loader) % grad_accum != 0:
+        leftover = len(train_loader) % grad_accum
+        print(f"  note: {leftover} batch(es) per epoch fall outside the "
+              f"--grad-accum {grad_accum} group and are dropped (never stepped)")
 
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=1.0)
@@ -415,7 +419,6 @@ def train(
 
     toks_per_step = batch_size * block_size
     best_val = float("inf")
-    step = 0
     t_start = time.time()
     for epoch in range(1, epochs + 1):
         model.train()
@@ -436,7 +439,6 @@ def train(
                     optimizer.step()
                 scheduler.step()
                 optimizer.zero_grad()
-                step += 1
             total_loss += loss.item() * grad_accum
 
         # Validation (no dropout, no grad, fp32 for stable metrics)
@@ -483,6 +485,8 @@ def sample(model: GPT, tokenizer: CharTokenizer, prompt: str, n_chars: int, temp
     device = next(model.parameters()).device
     model.eval()
     start = tokenizer.encode(prompt)
+    if not start:
+        raise ValueError("sample(): prompt is empty — nothing to condition on")
     idx = torch.tensor([start], dtype=torch.long, device=device)
     out = model.generate(idx, n_chars, temperature=temperature, top_p=top_p)
     print(tokenizer.decode(out[0].tolist()))
