@@ -256,8 +256,14 @@ def main(execute: bool = False):
                        "name": "python3"},
         "language_info": {"name": "python", "version": "3.14"},
     }
-    nb.cells = [nbformat.v4.new_markdown_cell(c["source"]) if c["cell_type"] == "markdown"
-                else nbformat.v4.new_code_cell(c["source"]) for c in CELLS]
+    nb.cells = []
+    for i, c in enumerate(CELLS):
+        cell = (nbformat.v4.new_markdown_cell(c["source"]) if c["cell_type"] == "markdown"
+                else nbformat.v4.new_code_cell(c["source"]))
+        # Deterministic ids: random UUIDs would rewrite the file on every run,
+        # making CI's generator check vacuous and the tree perpetually dirty.
+        cell["id"] = f"cell-{i:02d}"
+        nb.cells.append(cell)
     nbformat.validate(nb)
     with open("notebooks/01_transformer_walkthrough.ipynb", "w") as f:
         nbformat.write(nb, f)
