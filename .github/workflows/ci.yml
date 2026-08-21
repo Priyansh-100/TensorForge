@@ -38,8 +38,10 @@ jobs:
       - name: Install dependencies
         run: pip install -e ".[dev]"
 
-      - name: Validate notebook JSON
-        run: python build_notebook.py
+      - name: Validate notebook JSON (and that it matches the generator)
+        run: |
+          python build_notebook.py
+          git diff --exit-code -- notebooks/
 
       - name: Equivalence tests (pytest) with coverage
         run: python -m pytest tests -q --cov=transformer --cov-report=term-missing
