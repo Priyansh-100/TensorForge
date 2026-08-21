@@ -416,6 +416,7 @@ def demo_bpe(device):
     n_char = len(val_text)
     block = 128
     losses = {}
+    char_vocab = None
     for tag, model, tokenizer in (("char (gpt_rope.pt)", None, None), ("BPE (gpt_rope_bpe.pt)", bpe_model, bt)):
         if tag.startswith("char"):
             try:
@@ -426,6 +427,7 @@ def demo_bpe(device):
                 model.load_state_dict(c["model"])
                 model.eval()
                 tokenizer = c["tokenizer"]
+                char_vocab = c["tokenizer"].vocab_size
             except FileNotFoundError:
                 continue
         ids = tokenizer.encode(val_text)
@@ -433,9 +435,9 @@ def demo_bpe(device):
         with torch.no_grad():
             for i in range(0, len(ids) - block - 1, block):
                 x = torch.tensor([ids[i:i + block]], dtype=torch.long, device=device)
+                y = torch.tensor([ids[i + 1:i + block + 1]], dtype=torch.long, device=device)
                 logits = model(x, create_look_ahead_mask(block).to(device))
-                loss = F.cross_entropy(logits.view(-1, logits.size(-1)),
-                                       x.roll(-1, dims=1).view(-1))
+                loss = F.cross_entropy(logits.view(-1, logits.size(-1)), y.view(-1))
                 total += loss.item()
                 cnt += 1
         if cnt:
@@ -449,7 +451,7 @@ def demo_bpe(device):
             ratio = losses["BPE (gpt_rope_bpe.pt)"] / losses["char (gpt_rope.pt)"]
             print(f"  → BPE {ratio:.2f}x char-level perplexity "
                   f"({'better' if ratio < 1 else 'worse'}) at {bt.vocab_size} "
-                  f"tokens vs {losses and 65} chars")
+                  f"tokens vs {char_vocab} chars")
 
 
 if __name__ == "__main__":

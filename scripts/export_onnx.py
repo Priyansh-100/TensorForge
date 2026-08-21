@@ -1,13 +1,17 @@
 """
 Export the RoPE GPT to ONNX and benchmark ONNX Runtime vs PyTorch.
 
-  pip install onnx onnxruntime
+  pip install onnx onnxruntime onnxscript
   python scripts/export_onnx.py                     # exports checkpoints/gpt_rope.onnx
   python scripts/export_onnx.py --ckpt checkpoints/gpt_rope_gqa.pt
   python scripts/export_onnx.py --no-bench           # export only
 
+(onnxscript is required by torch's ONNX exporter; the pyproject "export" extra
+installs all three.)
+
 The exported graph uses dynamic batch and sequence axes, so any prompt length
-is accepted at inference time.
+up to 128 tokens is accepted at inference time (RoPE tables are fixed at
+export; the PyTorch model grows them lazily, the ONNX graph cannot).
 """
 
 import argparse
@@ -34,10 +38,11 @@ def main():
     parser.add_argument("--n-steps", type=int, default=20)
     args = parser.parse_args()
 
-    try:
-        import onnx  # noqa: F401  (ensures the exporter's proto serializer exists)
-    except ImportError:
-        raise SystemExit("`pip install onnx` first (the torch.onnx exporter needs it)")
+    for dep in ("onnx", "onnxscript"):
+        try:
+            __import__(dep)
+        except ImportError:
+            raise SystemExit(f"`pip install {dep}` first (the torch.onnx exporter needs it)")
 
     ckpt = torch.load(args.ckpt, map_location="cpu", weights_only=False)
     tokenizer = ckpt["tokenizer"]

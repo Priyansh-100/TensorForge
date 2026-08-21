@@ -37,13 +37,17 @@ def eval_val(model: GPT, tokenizer, val_data: torch.Tensor, block_size: int,
              batch_size: int, device) -> float:
     model.eval()
     n = len(val_data) // block_size
-    data = val_data[: n * block_size].view(-1, block_size)
+    flat = val_data[: n * block_size]           # n*block_size contiguous tokens
+    # True next-token targets: predict flat[i+1] from flat[i]. The final
+    # sequence's last token has no successor → drop one sequence.
+    xs = flat[: (n - 1) * block_size].view(n - 1, block_size)
+    ys = flat[1:(n - 1) * block_size + 1].view(n - 1, block_size)
     mask = create_look_ahead_mask(block_size).to(device)
     total, count = 0.0, 0
     with torch.no_grad():
-        for i in range(0, len(data), batch_size):
-            x = data[i:i + batch_size].to(device)
-            y = x.roll(-1, dims=1)
+        for i in range(0, len(xs), batch_size):
+            x = xs[i:i + batch_size].to(device)
+            y = ys[i:i + batch_size].to(device)
             logits = model(x, mask)
             loss = torch.nn.functional.cross_entropy(
                 logits.view(-1, logits.size(-1)), y.view(-1))
@@ -76,7 +80,7 @@ def main():
     print(f"{'tag':<6} {'params':>9} {'val loss':>9} {'ppl':>7}")
     rows = []
     for cfg in CONFIGS:
-        tag = cfg.pop("tag")
+        tag = cfg["tag"]
         print(f"training {tag}: d_model={cfg['d_model']} layers={cfg['num_layers']} ...")
         model = train(
             tokenizer, train_data, val_data,
