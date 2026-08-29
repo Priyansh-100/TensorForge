@@ -87,6 +87,47 @@ def precompute_rope(dim: int, max_len: int, base: float = 10000.0):
     return emb.cos(), emb.sin()
 
 
+def precompute_rope_scaled(
+    dim: int, max_len: int, base: float = 10000.0,
+    scaling_type: str = "none", scaling_factor: float = 1.0
+):
+    """
+    NTK-aware or linear RoPE scaling for longer context.
+    
+    - none: standard RoPE (base=10000)
+    - linear: scale positions by 1/scaling_factor (extends range)
+    - ntk:    NTK-aware scaling — adjust base so high frequencies are preserved
+              (RoPE paper, Sec 3.4; used in LLaMA 3.1+, Nemotron 3 Ultra)
+    
+    Args:
+        dim: head dimension
+        max_len: sequence length (scaled effective length = max_len * scaling_factor)
+        base: original base frequency (10000)
+        scaling_type: "none", "linear", or "ntk"
+        scaling_factor: >1 extends context window
+    """
+    if scaling_type == "none":
+        return precompute_rope(dim, max_len, base)
+    
+    if scaling_type == "linear":
+        # Just stretch the position indices
+        t = torch.arange(max_len, dtype=torch.float) * scaling_factor
+        inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2, dtype=torch.float) / dim))
+        freqs = torch.outer(t, inv_freq)
+    elif scaling_type == "ntk":
+        # NTK-aware: adjust base to preserve high-frequency info
+        # base' = base * scaling_factor^(dim/(dim-2))
+        adjusted_base = base * (scaling_factor ** (dim / (dim - 2)))
+        inv_freq = 1.0 / (adjusted_base ** (torch.arange(0, dim, 2, dtype=torch.float) / dim))
+        t = torch.arange(max_len, dtype=torch.float)
+        freqs = torch.outer(t, inv_freq)
+    else:
+        raise ValueError(f"Unknown scaling_type: {scaling_type}")
+    
+    emb = torch.cat([freqs, freqs], dim=-1)
+    return emb.cos(), emb.sin()
+
+
 def rotate_half(x: torch.Tensor) -> torch.Tensor:
     """Split in half and swap with negation: pairs dim i with dim i + d/2.
     (This is the convention compatible with cat([freqs, freqs]) below.)"""
@@ -239,6 +280,23 @@ class NoamSchedule(torch.optim.lr_scheduler.LambdaLR):
             )
 
         super().__init__(optimizer, lr)
+
+
+class CosineWarmRestarts(torch.optim.lr_scheduler.CosineAnnealingWarmRestarts):
+    """
+    Cosine annealing with warm restarts (Loshchilov & Hutter, 2016).
+    
+    Each restart period: lr follows cosine decay from max_lr to min_lr,
+    then restarts at max_lr. Period length multiplies by T_mult each restart.
+    
+    Args:
+        optimizer: wrapped optimizer
+        T_0: number of steps for first restart period
+        T_mult: multiplier for period length after each restart (default 2)
+        eta_min: minimum learning rate (default 0)
+    """
+    def __init__(self, optimizer, T_0: int, T_mult: int = 2, eta_min: float = 0.0):
+        super().__init__(optimizer, T_0, T_mult, eta_min)
 
 
 # ---------------------------------------------------------------------------
