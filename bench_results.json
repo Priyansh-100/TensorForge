@@ -1,0 +1,57 @@
+[
+  {
+    "name": "gpt.pt",
+    "params": 826433,
+    "val_loss_stored": null,
+    "val_ppl_measured": 5.767739421011391,
+    "tok_s": 163.52916682586925,
+    "cache_mb": 0.5,
+    "verify": {
+      "cache_ok": true
+    }
+  },
+  {
+    "name": "gpt_rope.pt",
+    "params": 810049,
+    "val_loss_stored": 1.5023,
+    "val_ppl_measured": 6.257485916609107,
+    "tok_s": 209.11900172607895,
+    "cache_mb": 0.5,
+    "verify": {
+      "cache_ok": true
+    }
+  },
+  {
+    "name": "gpt_rope_bpe.pt",
+    "params": 924928,
+    "val_loss_stored": 3.0438858941197395,
+    "val_ppl_measured": 33.52473078237528,
+    "tok_s": 224.97382468546712,
+    "cache_mb": 0.5,
+    "verify": {
+      "cache_ok": true
+    }
+  },
+  {
+    "name": "gpt_rope_gqa.pt",
+    "params": 744001,
+    "val_loss_stored": 1.5339182056486607,
+    "val_ppl_measured": 6.339922712159395,
+    "tok_s": 235.02662769639048,
+    "cache_mb": 0.25,
+    "verify": {
+      "cache_ok": true
+    }
+  },
+  {
+    "name": "gpt_rope_mqa.pt",
+    "params": 710977,
+    "val_loss_stored": 1.514327298849821,
+    "val_ppl_measured": 6.297543497189217,
+    "tok_s": 255.27766890074227,
+    "cache_mb": 0.125,
+    "verify": {
+      "cache_ok": true
+    }
+  }
+]
