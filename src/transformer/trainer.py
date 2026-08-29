@@ -70,7 +70,8 @@ DATASETS = {"reverse": ReverseDataset, "copy": CopyDataset}
 # ---------------------------------------------------------------------------
 
 def train(task: str, epochs: int, save_path: str = "model.pt",
-          amp: bool = False, grad_accum: int = 1):
+          amp: bool = False, grad_accum: int = 1,
+          weight_decay: float = 0.0, grad_clip: float = 0.0):
     device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
     print(f"Using device: {device}")
 
@@ -103,7 +104,7 @@ def train(task: str, epochs: int, save_path: str = "model.pt",
 
     criterion = nn.CrossEntropyLoss(ignore_index=pad_idx)
     # The NoamSchedule lambda returns the full paper formula, so base LR = 1.0
-    optimizer = torch.optim.Adam(model.parameters(), lr=1.0)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1.0, weight_decay=weight_decay)
     scheduler = NoamSchedule(optimizer, d_model=D_MODEL, warmup_steps=400)
 
     use_amp = amp and device.type in ("cuda", "mps")
@@ -131,9 +132,14 @@ def train(task: str, epochs: int, save_path: str = "model.pt",
 
             if i % grad_accum == 0:
                 if scaler is not None:
+                    if grad_clip > 0:
+                        scaler.unscale_(optimizer)
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
                     scaler.step(optimizer)
                     scaler.update()
                 else:
+                    if grad_clip > 0:
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
                     optimizer.step()
                 scheduler.step()
                 optimizer.zero_grad()
