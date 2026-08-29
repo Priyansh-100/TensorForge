@@ -460,6 +460,10 @@ if __name__ == "__main__":
     parser.add_argument("--rope", action="store_true", help="load a RoPE-trained checkpoint")
     parser.add_argument("--ckpt", type=str, default=os.path.join(CKPT, "gpt.pt"),
                         help="checkpoint path")
+    parser.add_argument("--rope-scaling", choices=["none", "linear", "ntk"], default="none",
+                        help="RoPE scaling for longer context: linear or NTK-aware")
+    parser.add_argument("--rope-scaling-factor", type=float, default=1.0,
+                        help="scaling factor for RoPE (>1 extends context window)")
     args = parser.parse_args()
 
     demo_relative_property()
@@ -470,7 +474,8 @@ if __name__ == "__main__":
     if not isinstance(tokenizer, CharTokenizer):
         raise SystemExit(f"{args.ckpt} does not contain a CharTokenizer")
     model = GPT(vocab_size=tokenizer.vocab_size, max_len=128, rope=args.rope,
-                num_kv_heads=ckpt.get("num_kv_heads"))
+                num_kv_heads=ckpt.get("num_kv_heads"),
+                rope_scaling=args.rope_scaling, rope_scaling_factor=args.rope_scaling_factor)
     model.load_state_dict(ckpt["model"])
     model.to(device)
     demo_kv_cache(model, tokenizer, device, args.n_chars)
