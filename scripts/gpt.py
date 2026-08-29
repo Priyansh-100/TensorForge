@@ -21,7 +21,7 @@ CKPT = os.path.join(ROOT, "checkpoints")
 
 import torch  # noqa: E402
 
-from transformer.gpt import GPT, CharTokenizer, train, sample  # noqa: E402
+from transformer.gpt import GPT, CharTokenizer, train, sample, beam_sample  # noqa: E402
 from transformer.bpe import BPETokenizer  # noqa: E402
 # CharTokenizer must be in THIS namespace: checkpoints pickle it as
 # `__main__.CharTokenizer`, so torch.load resolves the class against the
@@ -71,6 +71,26 @@ if __name__ == "__main__":
                         help="training slices per epoch (bigger = more data per epoch)")
     parser.add_argument("--num-val-pairs", type=int, default=2000,
                         help="validation slices per epoch")
+    parser.add_argument("--beam", type=int, default=0,
+                        help="beam search width (0 = greedy sampling)")
+    parser.add_argument("--length-penalty", type=float, default=0.0,
+                        help="length penalty for beam search (>0 penalizes long sequences)")
+    parser.add_argument("--rope-scaling", choices=["none", "linear", "ntk"], default="none",
+                        help="RoPE scaling for longer context: linear or NTK-aware")
+    parser.add_argument("--rope-scaling-factor", type=float, default=1.0,
+                        help="scaling factor for RoPE (>1 extends context window)")
+    parser.add_argument("--weight-decay", type=float, default=0.0,
+                        help="Adam weight decay (L2 regularization)")
+    parser.add_argument("--grad-clip", type=float, default=0.0,
+                        help="gradient clipping max norm (0 = disabled)")
+    parser.add_argument("--scheduler", choices=["noam", "cosine_restarts"], default="noam",
+                        help="learning rate scheduler: noam (Transformer paper) or cosine_restarts")
+    parser.add_argument("--scheduler-t0", type=int, default=1000,
+                        help="CosineWarmRestarts: steps in first restart period (T_0)")
+    parser.add_argument("--scheduler-t-mult", type=int, default=2,
+                        help="CosineWarmRestarts: period multiplier after each restart")
+    parser.add_argument("--scheduler-eta-min", type=float, default=0.0,
+                        help="CosineWarmRestarts: minimum learning rate")
     args = parser.parse_args()
 
     if args.load:
@@ -93,10 +113,15 @@ if __name__ == "__main__":
                 and ckpt["model"]["lm_head.weight"].data_ptr()
                 == ckpt["model"]["token_embedding.weight"].data_ptr())
         model = GPT(vocab_size=tokenizer.vocab_size, max_len=args.block_size,
-                    rope=args.rope, num_kv_heads=num_kv_heads, tie_weights=tied)
+                    rope=args.rope, num_kv_heads=num_kv_heads, tie_weights=tied,
+                    rope_scaling=args.rope_scaling, rope_scaling_factor=args.rope_scaling_factor)
         model.load_state_dict(ckpt["model"])
-        sample(model, tokenizer, args.prompt, args.n_chars, args.temperature,
-               args.top_p)
+        if args.beam > 0:
+            beam_sample(model, tokenizer, args.prompt, args.n_chars,
+                        args.beam, args.length_penalty)
+        else:
+            sample(model, tokenizer, args.prompt, args.n_chars, args.temperature,
+                   args.top_p)
     else:
         with open(os.path.join(ROOT, "data", "shakespeare.txt"), "r", encoding="utf-8") as f:
             text = f.read()
@@ -124,7 +149,15 @@ if __name__ == "__main__":
             compile_model=args.compile, tb_log=args.tb_log,
             num_pairs=args.num_pairs, num_val_pairs=args.num_val_pairs,
             tie_weights=args.tie_weights,
+            rope_scaling=args.rope_scaling, rope_scaling_factor=args.rope_scaling_factor,
+            weight_decay=args.weight_decay, grad_clip=args.grad_clip,
+            scheduler=args.scheduler, scheduler_t0=args.scheduler_t0,
+            scheduler_t_mult=args.scheduler_t_mult, scheduler_eta_min=args.scheduler_eta_min,
         )
         print(f"Trained in {time.time() - t0:.1f}s\n")
-        sample(model, tokenizer, args.prompt, args.n_chars, args.temperature,
-               args.top_p)
+        if args.beam > 0:
+            beam_sample(model, tokenizer, args.prompt, args.n_chars,
+                        args.beam, args.length_penalty)
+        else:
+            sample(model, tokenizer, args.prompt, args.n_chars, args.temperature,
+                   args.top_p)
