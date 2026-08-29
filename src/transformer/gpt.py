@@ -15,14 +15,16 @@ from contextlib import nullcontext
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 
 from transformer.model import (
     MultiHeadAttention,
     FeedForward,
     NoamSchedule,
+    CosineWarmRestarts,
     create_look_ahead_mask,
-    precompute_rope,
+    precompute_rope_scaled,
 )
 
 # ---------------------------------------------------------------------------
@@ -149,19 +151,23 @@ class GPT(nn.Module):
         rope: bool = False,
         num_kv_heads: int | None = None,
         tie_weights: bool = False,
+        rope_scaling: str = "none",
+        rope_scaling_factor: float = 1.0,
     ):
         super().__init__()
         self.token_embedding = nn.Embedding(vocab_size, d_model)
+        self.rope_scaling = rope_scaling
+        self.rope_scaling_factor = rope_scaling_factor
         if rope:
             # Positions live inside attention (rotated Q/K) — no embedding needed
-            cos, sin = precompute_rope(d_model, max_len)
+            cos, sin = precompute_rope_scaled(d_model, max_len, scaling_type=rope_scaling, scaling_factor=rope_scaling_factor)
             self.register_buffer("cos", cos)
             self.register_buffer("sin", sin)
             # Under GQA, K lives in a num_kv_heads·d_k-wide space → own table.
             # persistent=False: derived state, excluded from checkpoints.
             num_kv_heads = num_heads if num_kv_heads is None else num_kv_heads
             kv_dim = num_kv_heads * (d_model // num_heads)
-            cos_k, sin_k = precompute_rope(kv_dim, max_len)
+            cos_k, sin_k = precompute_rope_scaled(kv_dim, max_len, scaling_type=rope_scaling, scaling_factor=rope_scaling_factor)
             self.register_buffer("cos_k", cos_k, persistent=False)
             self.register_buffer("sin_k", sin_k, persistent=False)
         else:
@@ -195,10 +201,14 @@ class GPT(nn.Module):
         lazily-fixed cache size. (Learned positions have no such escape.)"""
         if self.rope and need > self.cos.size(0):
             size = max(need, self.cos.size(0) * 2)  # geometric growth, not 1 token at a time
-            cos, sin = precompute_rope(self.cos.size(1), size)
+            cos, sin = precompute_rope_scaled(
+                self.cos.size(1), size, scaling_type=self.rope_scaling, scaling_factor=self.rope_scaling_factor
+            )
             self.register_buffer("cos", cos.to(self.cos.device))
             self.register_buffer("sin", sin.to(self.sin.device))
-            cos_k, sin_k = precompute_rope(self.cos_k.size(1), size)
+            cos_k, sin_k = precompute_rope_scaled(
+                self.cos_k.size(1), size, scaling_type=self.rope_scaling, scaling_factor=self.rope_scaling_factor
+            )
             self.register_buffer("cos_k", cos_k.to(self.cos_k.device), persistent=False)
             self.register_buffer("sin_k", sin_k.to(self.sin_k.device), persistent=False)
 
@@ -364,6 +374,14 @@ def train(
     num_pairs: int = 20000,
     num_val_pairs: int = 2000,
     tie_weights: bool = False,
+    rope_scaling: str = "none",
+    rope_scaling_factor: float = 1.0,
+    weight_decay: float = 0.0,
+    grad_clip: float = 0.0,
+    scheduler: str = "noam",
+    scheduler_t0: int = 1000,
+    scheduler_t_mult: int = 2,
+    scheduler_eta_min: float = 0.0,
 ) -> GPT:
     device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
     print(f"Using device: {device}")
@@ -382,6 +400,8 @@ def train(
         rope=rope,
         num_kv_heads=num_kv_heads,
         tie_weights=tie_weights,
+        rope_scaling=rope_scaling,
+        rope_scaling_factor=rope_scaling_factor,
     ).to(device)
     print(f"Model parameters: {model.count_params():,}")
 
@@ -411,8 +431,13 @@ def train(
               f"--grad-accum {grad_accum} group and are dropped (never stepped)")
 
     criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=1.0)
-    scheduler = NoamSchedule(optimizer, d_model=d_model, warmup_steps=1000)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1.0, weight_decay=weight_decay)
+    
+    # Learning rate scheduler
+    if scheduler == "cosine_restarts":
+        lr_scheduler: CosineWarmRestarts | NoamSchedule = CosineWarmRestarts(optimizer, T_0=scheduler_t0, T_mult=scheduler_t_mult, eta_min=scheduler_eta_min)
+    else:  # noam
+        lr_scheduler = NoamSchedule(optimizer, d_model=d_model, warmup_steps=1000)
 
     # No padding anywhere → mask is always the causal one
     mask = create_look_ahead_mask(block_size).to(device)
@@ -433,11 +458,16 @@ def train(
 
             if i % grad_accum == 0:
                 if scaler is not None:
+                    if grad_clip > 0:
+                        scaler.unscale_(optimizer)
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
                     scaler.step(optimizer)
                     scaler.update()
                 else:
+                    if grad_clip > 0:
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
                     optimizer.step()
-                scheduler.step()
+                lr_scheduler.step()
                 optimizer.zero_grad()
             total_loss += loss.item() * grad_accum
 
@@ -490,3 +520,52 @@ def sample(model: GPT, tokenizer: CharTokenizer, prompt: str, n_chars: int, temp
     idx = torch.tensor([start], dtype=torch.long, device=device)
     out = model.generate(idx, n_chars, temperature=temperature, top_p=top_p)
     print(tokenizer.decode(out[0].tolist()))
+
+
+def beam_sample(
+    model: GPT,
+    tokenizer: CharTokenizer,
+    prompt: str,
+    n_chars: int,
+    beam_size: int,
+    length_penalty: float = 0.0,
+) -> None:
+    """Beam search decoding for the decoder-only GPT."""
+    device = next(model.parameters()).device
+    model.eval()
+    start = tokenizer.encode(prompt)
+    if not start:
+        raise ValueError("beam_sample(): prompt is empty")
+    
+    vocab_size = tokenizer.vocab_size
+    idx = torch.tensor([start], dtype=torch.long, device=device)
+    
+    # Initial beam: replicate the prompt for each beam
+    beams = idx.repeat(beam_size, 1)  # (beam, seq)
+    scores = torch.zeros(beam_size, device=device)
+    
+    with torch.no_grad():
+        for _ in range(n_chars):
+            # Batched forward over all beams
+            mask = create_look_ahead_mask(beams.size(1)).to(device)
+            logits = model(beams, mask)  # (beam, seq, vocab)
+            log_probs = F.log_softmax(logits[:, -1, :], dim=-1)  # (beam, vocab)
+            
+            # Expand: (beam, vocab) → flat candidates
+            flat_scores = (scores.unsqueeze(1) + log_probs).view(-1)
+            top_scores, top_idx = flat_scores.topk(min(beam_size, flat_scores.size(0)))
+            
+            beam_idx = top_idx // vocab_size
+            token_idx = top_idx % vocab_size
+            
+            new_beams = torch.cat([beams[beam_idx], token_idx.unsqueeze(1)], dim=1)
+            beams, scores = new_beams, top_scores
+    
+    # Length-normalized score
+    if length_penalty > 0:
+        norm_scores = scores / (beams.size(1) ** length_penalty)
+    else:
+        norm_scores = scores
+    
+    best = beams[norm_scores.argmax()]
+    print(tokenizer.decode(best.tolist()))
