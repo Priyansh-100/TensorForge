@@ -28,6 +28,9 @@ import numpy as np  # noqa: E402
 
 from transformer.gpt import GPT  # noqa: E402
 from transformer.model import create_look_ahead_mask  # noqa: E402
+# CharTokenizer import needed: checkpoints pickle it as `__main__.CharTokenizer`
+# (see scripts/gpt.py for the full explanation)
+from transformer.gpt import CharTokenizer  # noqa: E402,F401
 
 
 def main():
