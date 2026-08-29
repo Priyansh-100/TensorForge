@@ -409,6 +409,8 @@ keeping the best-`val_loss` checkpoint, which stores:
 | `--save-path / --load-path` | checkpoints/gpt.pt | checkpoint file |
 | `--prompt / --n-chars / --temperature` | "To be, or not to be" / 400 / 0.8 | sampling |
 | `--top-p` | 1.0 | nucleus sampling mass (1.0 = plain temperature) |
+| `--beam` | 0 | beam search width (0 = greedy/temperature sampling) |
+| `--length-penalty` | 0.0 | length normalization for beam search (>0 favors shorter) |
 | `--seed` | None | bit-for-bit reproducible training |
 | `--amp` | off | fp16 autocast + GradScaler (CUDA/MPS); measures speed vs fp32 |
 | `--grad-accum` | 1 | accumulate N batches per optimizer step (bigger effective batch) |
@@ -419,6 +421,14 @@ keeping the best-`val_loss` checkpoint, which stores:
 | `--tie-weights` | off | share the token embedding and output head (GPT-2 style) |
 | `--num-pairs` | 20000 | training slices per epoch |
 | `--num-val-pairs` | 2000 | validation slices per epoch |
+| `--rope-scaling` | none | RoPE scaling for longer context: `linear` or `ntk` |
+| `--rope-scaling-factor` | 1.0 | scaling factor for RoPE (>1 extends context window) |
+| `--weight-decay` | 0.0 | Adam weight decay (L2 regularization) |
+| `--grad-clip` | 0.0 | gradient clipping max norm (0 = disabled) |
+| `--scheduler` | noam | LR scheduler: `noam` (Transformer paper) or `cosine_restarts` |
+| `--scheduler-t0` | 1000 | CosineWarmRestarts: first restart period (steps) |
+| `--scheduler-t-mult` | 2 | CosineWarmRestarts: period multiplier after restart |
+| `--scheduler-eta-min` | 0.0 | CosineWarmRestarts: minimum learning rate |
 
 ### The two inference paths
 
@@ -552,6 +562,16 @@ round-trips and does the fair per-character comparison.)
 - `--bpe / --bpe-vocab-size`: tokenizer swap.
 - `--tie-weights`: share the embedding and the output head (GPT-2 style) —
   `vocab · d_model` fewer parameters, verified in `tests/test_bpe.py`.
+- `--rope-scaling / --rope-scaling-factor`: NTK-aware or linear RoPE scaling
+  (`--rope-scaling ntk --rope-scaling-factor 2.0`) enables generation beyond
+  the 128-token training window — see §5 of `scripts/verify.py`.
+- `--weight-decay`: Adam weight decay (L2 regularization), e.g. `0.01`.
+- `--grad-clip`: gradient clipping max norm (e.g. `1.0`), prevents exploding
+  gradients during long training runs.
+- `--scheduler`: LR scheduler choice — `noam` (Transformer paper, default) or
+  `cosine_restarts` (cosine annealing with warm restarts, Loshchilov & Hutter 2016).
+- `--scheduler-t0 / --scheduler-t-mult / --scheduler-eta-min`: configure
+  cosine restarts (first period length, period multiplier, min LR).
 
 **Benchmarks & experiments:**
 
