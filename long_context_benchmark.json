@@ -1,0 +1,27 @@
+{
+  "checkpoint": "gpt_rope.pt",
+  "rope_scaling": "ntk",
+  "rope_scaling_factor": 2.0,
+  "results": [
+    {
+      "context_length": 128,
+      "perplexity": 15.641178940781037,
+      "sample": "To be, or not to be well.\n\nDUKE VINCENTIO:\nIS:\nNo, sin, fed o I:\nI I man n TI: n foure I wath pisin\nA amy d agesplemelelourimesort comes to comfort"
+    },
+    {
+      "context_length": 256,
+      "perplexity": 6.01188835653981,
+      "sample": "To be, or not to bed, a justice of their fellow,\nTo bear the world with his favour in the time of the while:\nAnd if you like then.\n\nKING RICHARD III:\nAs amen I by the deaths:\nIf shear the gought of th"
+    },
+    {
+      "context_length": 512,
+      "perplexity": 9.456027460898301,
+      "sample": "To be, or not to be in weary forth, I cried\nTo do not thee against the white in every soul tender to his brotherhood:\nTo see you will perforce his dooom a misfording your march.\n\n\nHASTINGS:\nNow, fore "
+    },
+    {
+      "context_length": 1024,
+      "perplexity": 15.09606405921821,
+      "sample": "To be, or not to bed, all his country.\n\nROMEO:\nIn any rememband in perform a table, lest a footman,\nWho hath been deposed to mine ear by thy proclaim baggage\nA person of babe on of his piece is not ch"
+    }
+  ]
+}
