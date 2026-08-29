@@ -576,14 +576,18 @@ round-trips and does the fair per-character comparison.)
 **Benchmarks & experiments:**
 
 ```bash
-python scripts/benchmark.py    # fp32 vs AMP vs compile vs amp+compile  → plots/benchmark.png
-python scripts/scale.py        # loss vs model size (4 tiny GPTs)       → plots/scaling_curve.png
-python scripts/export_onnx.py  # GPT → ONNX (dynamic batch/seq) + ORT speed test
+python scripts/benchmark.py           # fp32 vs AMP vs compile vs amp+compile  → plots/benchmark.png
+python scripts/scale.py               # loss vs model size (4 tiny GPTs)       → plots/scaling_curve.png
+python scripts/long_context_benchmark.py  # quality vs context length (RoPE scaling) → plots/long_context_benchmark.png
+python scripts/export_onnx.py         # GPT → ONNX (dynamic batch/seq) + ORT speed test
 ```
 
 `scripts/scale.py` is the Chinchilla-style story at toy scale: four GPTs
 (32 → 256 `d_model`) trained on the same data with the same recipe, showing
-validation loss falling as parameters grow. `scripts/export_onnx.py` exports
+validation loss falling as parameters grow. `scripts/long_context_benchmark.py`
+measures how perplexity degrades as context exceeds the 128-token training
+window, and quantifies the benefit of NTK/linear RoPE scaling.
+`scripts/export_onnx.py` exports
 `checkpoints/gpt_rope.pt` to ONNX with dynamic batch/sequence axes and
 checks ONNX Runtime logits against PyTorch (`pip install onnx onnxruntime`).
 
