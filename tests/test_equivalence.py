@@ -183,6 +183,28 @@ def test_length_extrapolation():
     print("  length extrapolation past 128-token window: OK")
 
 
+def test_softmax_saturation_demo():
+    """Verify softmax saturation behavior with and without scaling."""
+    import math
+    n_keys = 50
+    # d_k=8: unscaled should be more saturated than scaled
+    dots = torch.randn(20000, n_keys) * math.sqrt(8)
+    p_unscaled = F.softmax(dots, -1).max(-1).values.mean().item()
+    scaled = dots / math.sqrt(8)
+    p_scaled = F.softmax(scaled, -1).max(-1).values.mean().item()
+    # unscaled should be more saturated (closer to 1.0)
+    assert p_unscaled > p_scaled
+    
+    # d_k=4096: scaling should help keep max-P low
+    dots = torch.randn(20000, n_keys) * math.sqrt(4096)
+    p_unscaled = F.softmax(dots, -1).max(-1).values.mean().item()
+    scaled = dots / math.sqrt(4096)
+    p_scaled = F.softmax(scaled, -1).max(-1).values.mean().item()
+    # scaling should bring max-P down significantly
+    assert p_scaled < 0.2
+    assert p_unscaled > p_scaled
+
+
 if __name__ == "__main__":
     import traceback
 
