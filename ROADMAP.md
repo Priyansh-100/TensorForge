@@ -10,9 +10,11 @@ make the change, then *prove* it (equivalence check) or *measure* the delta
    share one matrix, `vocab · d_model` fewer parameters; round-trip tested.
 2. ✅ **Gradient accumulation** — done (`--grad-accum N`), including
    alignment with the Noam lr schedule.
-3. **Longer training** — 60 epochs on the same data; val loss keeps falling
+3. ✅ **Activation checkpointing** — done (`--checkpoint-every N`);
+   trades compute for memory via gradient checkpointing (`torch.utils.checkpoint`).
+4. **Longer training** — 60 epochs on the same data; val loss keeps falling
    (the model underfits at 30). Watch for the plateau; log it.
-4. **Bigger architecture** — `--heads 8 --layers 6 --d-model 256` is
+5. **Bigger architecture** — `--heads 8 --layers 6 --d-model 256` is
    already supported; bigger model + more epochs is the single best quality
    lever here.
 5. ✅ **`torch.compile(model)`** — done (`--compile`); benchmark it with
@@ -36,6 +38,25 @@ make the change, then *prove* it (equivalence check) or *measure* the delta
 11. ✅ **Beam search for `scripts/gpt.py`** — port `scripts/decode.py`'s
     batched beam as `--beam`; greedy vs beam on characters with a best-path
     comparison.
+12. ✅ **Weight tying** — done (`--tie-weights`): embedding and output head
+    share one matrix, `vocab · d_model` fewer parameters; round-trip tested.
+13. ✅ **Gradient accumulation** — done (`--grad-accum N`), including
+    alignment with the Noam lr schedule.
+14. ✅ **Cosine warm restarts** — done (`--scheduler cosine_restarts`);
+    LR scheduler with warm restarts (Loshchilov & Hutter 2016).
+15. ✅ **Weight decay & grad clip** — done (`--weight-decay`, `--grad-clip`);
+    L2 regularization and gradient clipping.
+16. ✅ **NTK/linear RoPE scaling** — done (`--rope-scaling ntk|linear`);
+    extends context window with NTK-aware frequency adjustment.
+17. ✅ **Long-context benchmark** — `scripts/long_context_benchmark.py`;
+    measures ppl vs context length with/without RoPE scaling.
+18. ✅ **LR finder/visualizer** — `scripts/lr_finder.py`; plots Noam & CosineRestarts.
+19. ✅ **Knowledge Distillation** — `scripts/distill.py`; student from teacher logits.
+20. ✅ **LoRA fine-tuning** — `scripts/lora_finetune.py`; 68% fewer trainable params.
+21. ✅ **Mixture-of-Experts** — `scripts/moe_train.py`; 4 experts, top-2 routing.
+22. ✅ **Speculative Decoding** — `scripts/speculative_decode.py`; draft+main model.
+23. ✅ **Activation Checkpointing** — `scripts/activation_checkpoint.py`;
+    gradient checkpointing for memory-efficient training.
 
 ## Advanced (research-shaped)
 
@@ -54,6 +75,16 @@ make the change, then *prove* it (equivalence check) or *measure* the delta
 16. **Serving shim** — wrap `generate_cached` in a tiny HTTP/SSE handler;
     the KV-cache path is already the production-shaped one. (An ONNX export
     is already available via `scripts/export_onnx.py`.)
+17. **Flash Attention v2 kernel** — Triton implementation for memory-efficient
+    attention (reduces HBM reads/writes, enables longer context).
+18. **PagedAttention / vLLM-style serving** — continuous batching, KV cache
+    paging for production serving.
+19. **Tensor/Pipeline Parallelism** — multi-GPU training with Megatron/DeepSpeed style parallelism.
+20. **Direct Preference Optimization (DPO)** — simpler than RLHF, no reward model needed.
+21. **Multi-token prediction** — predict n tokens per step for faster training.
+22. **Prefix caching** — cache shared prefixes across requests for serving.
+23. **RAG with FAISS** — embeddings + vector search for retrieval-augmented generation.
+24. **QLoRA** — 4-bit quantization + LoRA for 4× memory reduction.
 
 ---
 
