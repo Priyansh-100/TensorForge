@@ -1,0 +1,27 @@
+[
+  {
+    "prompt": "To be, or not to be, ",
+    "chosen": "that is the question.",
+    "rejected": "that is not the answer."
+  },
+  {
+    "prompt": "All the world",
+    "chosen": "is a stage.",
+    "rejected": "is a book."
+  },
+  {
+    "prompt": "Shall I compare thee to a summer",
+    "chosen": "day?",
+    "rejected": "night?"
+  },
+  {
+    "prompt": "What light through yonder",
+    "chosen": "window breaks?",
+    "rejected": "door opens?"
+  },
+  {
+    "prompt": "The quality of mercy",
+    "chosen": "is not strained.",
+    "rejected": "is very strong."
+  }
+]
