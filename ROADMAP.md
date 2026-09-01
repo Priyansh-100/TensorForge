@@ -80,7 +80,7 @@ make the change, then *prove* it (equivalence check) or *measure* the delta
 18. **PagedAttention / vLLM-style serving** — continuous batching, KV cache
     paging for production serving.
 19. **Tensor/Pipeline Parallelism** — multi-GPU training with Megatron/DeepSpeed style parallelism.
-20. **Direct Preference Optimization (DPO)** — simpler than RLHF, no reward model needed.
+20. ✅ **Direct Preference Optimization (DPO)** — simpler than RLHF, no reward model needed.
 21. **Multi-token prediction** — predict n tokens per step for faster training.
 22. **Prefix caching** — cache shared prefixes across requests for serving.
 23. **RAG with FAISS** — embeddings + vector search for retrieval-augmented generation.
