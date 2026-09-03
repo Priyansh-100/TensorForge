@@ -26,7 +26,6 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from transformer.gpt import GPT, CharTokenizer
-from transformer.model import create_look_ahead_mask, NoamSchedule
 
 
 CKPT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "checkpoints")
@@ -58,25 +57,25 @@ def load_checkpoint(path: str):
     # Infer architecture from checkpoint
     state_dict = ckpt["model"]
     d_model = state_dict["token_embedding.weight"].shape[1]
-    vocab_size = state_dict["token_embedding.weight"].shape[0]
     num_layers = sum(1 for k in state_dict.keys() if k.startswith("blocks.") and k.endswith(".norm1.weight"))
     
-    # Infer num_heads from W_q shape: [num_heads * d_k, d_model]
+    # Infer num_heads from W_q shape: [out_features, in_features]
     w_q_shape = state_dict["blocks.0.self_attn.W_q.weight"].shape
-    # W_q is [out_features, in_features] = [num_heads * d_k, d_model] or [d_model, d_model]
-    in_dim = w_q_shape[1]
-    out_dim = w_q_shape[0]
+    out_dim, in_dim = w_q_shape[0], w_q_shape[1]
+    
     if out_dim == in_dim:
-        # Standard MHA: W_q is [d_model, d_model]
-        d_k = d_model // state_dict["blocks.0.self_attn.W_q.weight"].shape[0]
-        num_heads = out_dim // d_k
+        # Standard MHA: W_q is [d_model, d_model] -> out_dim == in_dim == d_model
+        # For this repo, standard MHA uses 4 heads by default
+        num_heads = ckpt.get("num_heads", 4)
     else:
+        # GQA case: W_q is [num_heads * d_k, d_model]
         d_k = state_dict["blocks.0.self_attn.W_q.weight"].shape[1]
-        num_heads = state_dict["blocks.0.self_attn.W_q.weight"].shape[0] // d_k
+        num_heads = w_q_shape[0] // d_k
     
     # Infer num_kv_heads from W_k shape: [num_kv_heads * d_k, d_model]
     w_k_shape = state_dict["blocks.0.self_attn.W_k.weight"].shape
-    d_k = state_dict["blocks.0.self_attn.W_q.weight"].shape[1]
+    # d_k = d_model / num_heads (head dimension)
+    d_k = d_model // num_heads
     num_kv_heads = w_k_shape[0] // d_k if "num_kv_heads" not in ckpt else ckpt.get("num_kv_heads")
     
     # Verify num_heads is multiple of num_kv_heads
@@ -116,7 +115,7 @@ def evaluate_ppl(model, tokenizer, val_text, block=128, batch_size=32, device="c
         for i in range(0, len(ids) - block - 1, block):
             x = torch.tensor([ids[i:i+block]], dtype=torch.long, device=device)
             y = torch.tensor([ids[i+1:i+block+1]], dtype=torch.long, device=device)
-            mask = torch.tril(torch.ones(block, block, device=device)).unsqueeze(0).unsqueeze(0)
+            mask = torch.tril(torch.ones(block, block, device=device, dtype=torch.bool)).unsqueeze(0).unsqueeze(0)
 
             logits = model(x, mask)
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), y.view(-1))
@@ -144,34 +143,26 @@ def benchmark_throughput(model, tokenizer, block_size=128, batch_size=32, steps=
     model.eval()
     x, y = next(iter(train_loader))
     x, y = x.to(device), y.to(device)
-    mask = torch.tril(torch.ones(128, 128, device=device)).unsqueeze(0).unsqueeze(0)
+    mask = torch.tril(torch.ones(128, 128, device=device, dtype=torch.bool)).unsqueeze(0).unsqueeze(0)
 
     # Warmup
     with torch.no_grad():
         for _ in range(3):
             _ = model(x, mask)
 
-    if device.type == "cuda":
+    if str(device) == "cuda":
         torch.cuda.synchronize()
     t0 = time.time()
     for _ in range(steps):
         with torch.no_grad():
             _ = model(x, mask)
-    if device.type == "cuda":
+    if str(device) == "cuda":
         torch.cuda.synchronize()
     dt = time.time() - t0
 
     tok_s = steps * batch_size * 128 / dt
     return tok_s
 
-
-def load_checkpoints(ckpt_dir):
-    """Find all .pt checkpoints in directory."""
-    checkpoints = []
-    for f in os.listdir(ckpt_dir):
-        if f.endswith(".pt"):
-            checkpoints.append(os.path.join(ckpt_dir, f))
-    return sorted(checkpoints)
 
 
 def eval_checkpoint(path, val_text, device="cpu"):
@@ -208,6 +199,7 @@ def eval_checkpoint(path, val_text, device="cpu"):
     return results
 
 
+
 def load_checkpoints(ckpt_dir):
     """Find all .pt checkpoints in directory."""
     checkpoints = []
@@ -218,6 +210,12 @@ def load_checkpoints(ckpt_dir):
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--ckpt", type=str, help="Single checkpoint to evaluate")
+    parser.add_argument("--bench", action="store_true", help="Run throughput benchmark")
+    parser.add_argument("--output", type=str, help="Output JSON file")
+    parser.add_argument("--device", type=str, default="auto")
+    args = parser.parse_args()
     parser = argparse.ArgumentParser()
     parser.add_argument("--ckpt", type=str, help="Single checkpoint to evaluate")
     parser.add_argument("--bench", action="store_true", help="Run throughput benchmark")
