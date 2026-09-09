@@ -1,0 +1,83 @@
+{
+  "checkpoint": "checkpoints/gpt_rope.pt",
+  "device": "cpu",
+  "model_params": 810049,
+  "config": {
+    "vocab_size": null,
+    "max_len": null,
+    "rope": null,
+    "num_kv_heads": null
+  },
+  "perplexity": {
+    "loss": 3.9086562242263403,
+    "perplexity": 49.831939697265625,
+    "tokens": 1118208,
+    "batches": 273
+  },
+  "generation": [
+    {
+      "prompt": "To be, or not to be",
+      "generated": "To be, or not to be so done!\nHow most good brother will be more false hour,\nBeheld his honour than have shed the consul"
+    },
+    {
+      "prompt": "The quick brown fox",
+      "generated": "The quick brown foxs with the duke as they\nThat would have to my heart shall make the earth.\n\nWARWICK:\nSo so, I will he"
+    }
+  ],
+  "long_context": {
+    "128": {
+      "loss": 1.6502686738967896,
+      "perplexity": 5.208378791809082,
+      "latency_ms": 1.3430118560791016,
+      "input_tokens": 128
+    },
+    "256": {
+      "loss": 1.5068944692611694,
+      "perplexity": 4.512694835662842,
+      "latency_ms": 2.1429061889648438,
+      "input_tokens": 256
+    },
+    "512": {
+      "loss": 0.6821280717849731,
+      "perplexity": 1.9780827760696411,
+      "latency_ms": 5.143165588378906,
+      "input_tokens": 473
+    },
+    "1024": {
+      "loss": 0.8422029614448547,
+      "perplexity": 2.3214755058288574,
+      "latency_ms": 11.596918106079102,
+      "input_tokens": 903
+    }
+  },
+  "throughput": {
+    "bs1_sl128": {
+      "batch_size": 1,
+      "seq_len": 128,
+      "latency_ms": 1.3267278671264648,
+      "tok_per_sec": 96477.9614354772,
+      "total_tokens": 1280
+    },
+    "bs1_sl256": {
+      "batch_size": 1,
+      "seq_len": 256,
+      "latency_ms": 1.9311904907226562,
+      "tok_per_sec": 132560.71901234568,
+      "total_tokens": 2560
+    },
+    "bs2_sl128": {
+      "batch_size": 2,
+      "seq_len": 128,
+      "latency_ms": 1.7966985702514648,
+      "tok_per_sec": 142483.55524887537,
+      "total_tokens": 2560
+    },
+    "bs2_sl256": {
+      "batch_size": 2,
+      "seq_len": 256,
+      "latency_ms": 4.005098342895508,
+      "tok_per_sec": 127837.0607074399,
+      "total_tokens": 5120
+    }
+  }
+}
