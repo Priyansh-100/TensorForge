@@ -43,8 +43,9 @@ equivalence checks are executable code, not claims.
 - [Part 12 — Step 10: BPE tokenizer & training knobs](#part-12--step-10-bpe-tokenizer--training-knobs)
 - [Part 13 — Results at a glance](#part-13--results-at-a-glance)
 - [Part 14 — Notebooks](#part-14--notebooks)
-- [Part 15 — Troubleshooting](#part-15--troubleshooting)
-- [Part 16 — FAQ](#part-16--faq)
+- [Part 15 — Advanced scripts](#part-15--advanced-scripts)
+- [Part 16 — Troubleshooting](#part-16--troubleshooting)
+- [Part 17 — FAQ](#part-17--faq)
 - [Roadmap](ROADMAP.md)
 - [Appendix — The verification philosophy](#appendix--the-verification-philosophy)
 - [References](#references)
@@ -152,6 +153,26 @@ scripts/                runnable entry points
   benchmark.py          training throughput: fp32 vs AMP vs torch.compile  → plots/benchmark.png
   scale.py              scaling-curve experiment (loss vs model size)      → plots/scaling_curve.png
   export_onnx.py        export GPT to ONNX, benchmark vs ONNX Runtime       → checkpoints/*.onnx
+  quantize.py           torchao quantization (INT8 dynamic, weight-only INT4/INT8)
+  merge_models.py       model merging (linear, SLERP, TIES, DARE, LoRA)
+  convert_hf.py         Hugging Face format conversion (config.json + safetensors)
+  eval_advanced.py      advanced evaluation (PPL, generation, long-context, throughput)
+  continuous_batching.py continuous batching engine for efficient LLM serving
+  curriculum_train.py   curriculum learning (progressive seq len, batch size, LR)
+  prefix_cache.py       prefix caching for common prompt prefixes
+  flash_attention.py    Flash Attention v2 Triton kernel
+  speculative_decode.py speculative decoding (draft + target model)
+  lora_finetune.py      LoRA fine-tuning
+  qlora_finetune.py     QLoRA 4-bit quantization + LoRA fine-tuning
+  moe_train.py          Mixture of Experts training
+  distill.py            knowledge distillation
+  rag_faiss.py          RAG with FAISS vector search
+  multi_token.py        multi-token prediction
+  activation_checkpoint.py gradient/activation checkpointing
+  lr_plot.py            LR schedule visualization
+  bench.py              evaluation harness for checkpoints
+  lr_finder.py          LR range finder / schedule visualizer
+  long_context_benchmark.py long-context quality vs length
 tests/
   test_equivalence.py   the proofs as pytest tests (python -m pytest tests)
   test_bpe.py           BPE round-trip / compression / determinism + training-knob tests
@@ -623,6 +644,14 @@ with `--seed N` for bit-reproducibility (e.g. `scripts/gpt.py --epochs 30
 tokens carry ~2× the information. `scripts/verify.py` §8 compares both
 models at equal *per-character* cost.
 
+### Advanced checkpoints
+
+| checkpoint | description | notes |
+|---|---|---|
+| `checkpoints/gpt_curriculum.pt` | Curriculum-trained (64→128→256 block) | Progressive sequence length training |
+| `checkpoints/gpt_merged.pt` | Linear merge of gpt_rope.pt + gpt_rope.pt | Model merging demo |
+| `checkpoints/gpt_rope_weight_only_int8.pt` | INT8 weight-only quantized (torchao) | 1.0× size (torchao custom tensor format) |
+
 ---
 
 ## Part 14 — Notebooks
@@ -645,7 +674,143 @@ has been executed end-to-end with zero errors on this repo's checkpoints.
 
 ---
 
-## Part 15 — Troubleshooting
+## Part 15 — Advanced scripts
+
+Beyond the core tutorial, the repo includes production-grade utilities:
+
+### 15.1 Quantization (`scripts/quantize.py`)
+
+Post-training quantization using **torchao** (PyTorch's modern quantization API):
+
+```bash
+# Weight-only INT8 (weights INT8, activations FP32) — best for CPU
+python scripts/quantize.py --ckpt checkpoints/gpt_rope.pt --method weight_only_int8 --benchmark --compare
+
+# Weight-only INT4 (weights INT4, group_size=128) — maximum compression
+python scripts/quantize.py --ckpt checkpoints/gpt_rope.pt --method weight_only_int4 --group-size 128 --benchmark --compare
+
+# Dynamic INT8 (weights + activations INT8) — CUDA/MPS
+python scripts/quantize.py --ckpt checkpoints/gpt_rope.pt --method dynamic_int8 --benchmark --compare
+```
+
+Outputs size reduction, latency comparison, and numerical diff vs FP32.
+
+### 15.2 Model merging (`scripts/merge_models.py`)
+
+Merge multiple checkpoints into one — useful for ensemble distillation, continual learning, or combining specialized adapters:
+
+```bash
+# Linear (weighted average)
+python scripts/merge_models.py --models ckpt1.pt ckpt2.pt --weights 0.7 0.3 --method linear --output merged.pt
+
+# SLERP (spherical interpolation, 2 models)
+python scripts/merge_models.py --models ckpt1.pt ckpt2.pt --weights 0.5 0.5 --method slerp --slerp-t 0.5 --output merged.pt
+
+# TIES (Trim, Elect Sign, Merge — Yadav et al. 2023)
+python scripts/merge_models.py --models base.pt ft1.pt ft2.pt --weights 1.0 0.5 0.5 --method ties --density 0.5 --output merged.pt
+
+# DARE (Drop And REscale — Yu et al. 2023)
+python scripts/merge_models.py --models base.pt ft1.pt --weights 1.0 0.5 --method dare --density 0.5 --rescale 1.2 --output merged.pt
+
+# LoRA merge (base + LoRA adapter)
+python scripts/merge_models.py --models checkpoints/gpt_rope.pt checkpoints/gpt_lora.pt --method lora --lora-scaling 1.0 --output merged.pt
+```
+
+### 15.3 Hugging Face conversion (`scripts/convert_hf.py`)
+
+Interoperability with the HF ecosystem:
+
+```bash
+# Export mini-GPT to HF format (config.json + model.safetensors)
+python scripts/convert_hf.py export --ckpt checkpoints/gpt_rope.pt --output ./hf_model/
+
+# Import HF model to mini-GPT
+python scripts/convert_hf.py import --hf-path ./hf_model/ --output checkpoints/gpt_from_hf.pt
+
+# Test with transformers library
+python scripts/convert_hf.py test --hf-path ./hf_model/ --prompt "To be, or not to be"
+
+# Push to HF Hub
+python scripts/convert_hf.py export --ckpt checkpoints/gpt_rope.pt --output ./hf_model/ --push-to-hub --repo-id user/model
+```
+
+### 15.4 Advanced evaluation (`scripts/eval_advanced.py`)
+
+Comprehensive evaluation beyond perplexity:
+
+```bash
+python scripts/eval_advanced.py --ckpt checkpoints/gpt_rope.pt \
+    --benchmark-throughput --batch-sizes 1 2 4 8 --seq-lengths 128 256 512 \
+    --context-lengths 128 256 512 1024 \
+    --profile-memory --device cuda
+```
+
+Outputs JSON with:
+- Perplexity on validation corpus
+- Generation samples with configurable prompts
+- Long-context quality (perplexity vs context length)
+- Throughput benchmark (tok/s vs batch size, seq length)
+- GPU memory profiling (allocated, reserved, peak)
+
+### 15.5 Continuous batching (`scripts/continuous_batching.py`)
+
+Production-style serving engine with dynamic batching:
+
+```bash
+python scripts/continuous_batching.py
+```
+
+Implements:
+- **Paged KV cache** (block-based allocation like vLLM/PagedAttention)
+- **Request scheduler** (running decode requests first, then waiting prefill)
+- **Streaming token generation** per request
+- **Priority queue** for request ordering
+
+### 15.6 Curriculum learning (`scripts/curriculum_train.py`)
+
+Progressive training from short to long sequences:
+
+```bash
+# Fast curriculum (3 stages)
+python scripts/curriculum_train.py --curriculum fast --d-model 64 --num-layers 2 --num-heads 4 --save checkpoints/gpt_curriculum.pt
+
+# Thorough curriculum (5 stages)
+python scripts/curriculum_train.py --curriculum thorough --d-model 384 --num-layers 6 --num-heads 6 --save checkpoints/gpt_curriculum.pt
+```
+
+Stages: warmup (block=64) → short (128) → medium (256) → long (512) → xlong (1024)
+with adaptive batch sizes, LR multipliers, and early stopping per stage.
+
+### 15.7 Prefix caching (`scripts/prefix_cache.py`)
+
+Cache KV states for common prompt prefixes (system prompts, few-shot examples):
+
+```bash
+python scripts/prefix_cache.py --prefix "System: You are a helpful assistant." --n-tokens 100
+```
+
+Precomputes KV cache for the prefix once, then reuses it for every continuation —
+critical for serving scenarios with shared prompt templates.
+
+### 15.8 Other advanced scripts
+
+| script | purpose |
+|---|---|
+| `flash_attention.py` | Flash Attention v2 Triton kernel (requires `pip install triton`) |
+| `speculative_decode.py` | Speculative decoding: small draft model + large target model |
+| `lora_finetune.py` / `qlora_finetune.py` | LoRA / QLoRA fine-tuning |
+| `moe_train.py` | Mixture of Experts training |
+| `distill.py` | Knowledge distillation (teacher → student) |
+| `rag_faiss.py` | RAG with FAISS vector search |
+| `multi_token.py` | Multi-token prediction (predict N future tokens per step) |
+| `activation_checkpoint.py` | Gradient/activation checkpointing for memory savings |
+| `lr_plot.py` | LR schedule visualization (Noam, CosineRestarts) |
+| `bench.py` | Evaluation harness for checkpoint comparison |
+| `long_context_benchmark.py` | Quality vs context length with RoPE scaling |
+
+---
+
+## Part 16 — Troubleshooting
 
 | symptom | cause & fix |
 |---|---|
@@ -659,7 +824,7 @@ has been executed end-to-end with zero errors on this repo's checkpoints.
 
 ---
 
-## Part 16 — FAQ
+## Part 17 — FAQ
 
 **Why is prefill bit-identical (|Δ| = 0.0) but the one-token step only
 < 1e-4?** Prefill literally runs the same computation as the naive forward
