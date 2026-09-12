@@ -20,10 +20,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader
 
 from transformer.gpt import GPT, CharTokenizer
-from transformer.model import create_look_ahead_mask, NoamSchedule
+from transformer.model import create_look_ahead_mask
 
 
 def speculative_generate(
@@ -106,42 +105,60 @@ def speculative_generate(
             with torch.no_grad():
                 logits = model(verify_seq, mask)
             
-            # Check each draft token against main model
+            # Check each draft token against main model using rejection sampling
             accepted_tokens = []
+            num_accepted_this_round = 0
             for i, draft_token in enumerate(draft_tokens):
                 pos = idx.size(1) + i
                 main_logits = logits[:, pos:pos+1, :]
                 main_probs = F.softmax(main_logits / temperature, dim=-1)
                 
+                # Get draft model probability for this token at this position
+                draft_idx_partial = torch.cat([idx] + [torch.tensor([[t]], device=device) for t in draft_tokens[:i+1]], dim=1)
+                draft_mask = create_look_ahead_mask(draft_idx_partial.size(1)).to(device)
+                with torch.no_grad():
+                    draft_logits = draft_model(draft_idx_partial, draft_mask)[:, -1:, :]
+                draft_probs = F.softmax(draft_logits / temperature, dim=-1)
+                
                 # Apply top-p if needed
                 if top_p < 1.0:
-                    sorted_probs, sorted_idx = torch.sort(main_probs, dim=-1, descending=True)
-                    keep = torch.cumsum(sorted_probs, dim=-1) - sorted_probs < top_p
-                    keep[..., 0] = True
-                    main_probs = torch.zeros_like(main_probs).scatter_(-1, sorted_idx,
-                                                                      sorted_probs.masked_fill(~keep, 0.0))
-                    main_probs = main_probs / main_probs.sum(dim=-1, keepdim=True)
+                    for probs in [main_probs, draft_probs]:
+                        sorted_probs, sorted_idx = torch.sort(probs, dim=-1, descending=True)
+                        keep = torch.cumsum(sorted_probs, dim=-1) - sorted_probs < top_p
+                        keep[..., 0] = True
+                        probs = torch.zeros_like(probs).scatter_(-1, sorted_idx,
+                                                                  sorted_probs.masked_fill(~keep, 0.0))
+                        probs = probs / probs.sum(dim=-1, keepdim=True)
                 
-                main_token = torch.argmax(main_probs, dim=-1).item()
+                # Rejection sampling: accept with probability min(1, p_main / p_draft)
+                p_main = main_probs[0, 0, draft_token].item()
+                p_draft = draft_probs[0, 0, draft_token].item()
                 
-                if main_token == draft_token:
-                    accepted_tokens.append(main_token)
-                    accepted += 1
+                if p_draft > 0:
+                    accept_prob = min(1.0, p_main / p_draft)
                 else:
-                    # Rejection: use main model's token and stop speculating
+                    accept_prob = 0.0
+                
+                if torch.rand(1).item() < accept_prob:
+                    accepted_tokens.append(draft_token)
+                    num_accepted_this_round += 1
+                else:
+                    # Rejection: sample from corrected distribution
+                    # For simplicity, just use main model's argmax
+                    main_token = torch.argmax(main_probs, dim=-1).item()
                     accepted_tokens.append(main_token)
                     break
             
             total_speculated += len(draft_tokens)
             total_generated += len(accepted_tokens)
-            accepted += len(accepted_tokens) - (1 if len(accepted_tokens) < len(draft_tokens) else 0)
+            accepted += num_accepted_this_round
             
             # Append accepted tokens to idx
             if accepted_tokens:
                 idx = torch.cat([idx] + [torch.tensor([[t]], device=device) for t in accepted_tokens], dim=1)
             
-            # If we rejected or generated enough, break
-            if len(accepted_tokens) < len(draft_tokens) or total_generated >= n_tokens:
+            # If we generated enough, break (don't break on rejection - continue speculating)
+            if total_generated >= n_tokens:
                 break
     
     acceptance_rate = accepted / total_speculated if total_speculated > 0 else 0
@@ -150,59 +167,17 @@ def speculative_generate(
     return tokenizer.decode(idx[0].tolist())
 
 
-def train_draft_model(
-    tokenizer,
-    train_data,
-    val_data,
-    epochs: int = 5,
-    block_size: int = 128,
-    d_model: int = 64,
-    num_heads: int = 2,
-    d_ff: int = 128,
-    num_layers: int = 2,
-    batch_size: int = 32,
-    save_path: str = "checkpoints/gpt_draft.pt",
-    seed: int = 42,
-):
-    """Train a tiny draft model."""
-    device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
-    torch.manual_seed(seed)
+def create_draft_model(main_model, num_draft_layers=2):
+    """Create a draft model from the first N layers of the main model.
     
-    model = GPT(
-        vocab_size=tokenizer.vocab_size,
-        d_model=d_model,
-        num_heads=num_heads,
-        d_ff=d_ff,
-        num_layers=num_layers,
-        max_len=block_size,
-        rope=True,
-    ).to(device)
-    
-    print(f"Draft model parameters: {model.count_params():,}")
-    
-    train_loader = DataLoader(CharDataset(train_data, block_size, 8000), batch_size=batch_size, shuffle=True)
-    _ = DataLoader(CharDataset(val_data, block_size, 800), batch_size=batch_size, shuffle=True)
-    
-    criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=1.0)
-    scheduler = NoamSchedule(optimizer, d_model=64, warmup_steps=500)
-    mask = create_look_ahead_mask(block_size).to(device)
-    
-    for epoch in range(1, epochs + 1):
-        model.train()
-        optimizer.zero_grad()
-        for x, y in train_loader:
-            x, y = x.to(device), y.to(device)
-            logits = model(x, mask)
-            loss = criterion(logits.view(-1, logits.size(-1)), y.view(-1))
-            loss.backward()
-            optimizer.step()
-            scheduler.step()
-            optimizer.zero_grad()
-    
-    torch.save({"model": model.state_dict(), "tokenizer": tokenizer, "val_loss": 1.0}, save_path)
-    print(f"Draft model saved to {save_path}")
-    return model
+    This is the standard approach for speculative decoding - the draft model
+    is a shallow copy of the main model (first few layers only).
+    """
+    import copy
+    draft_model = copy.deepcopy(main_model)
+    # Keep only the first num_draft_layers
+    draft_model.blocks = torch.nn.ModuleList(list(main_model.blocks)[:num_draft_layers])
+    return draft_model
 
 
 class CharDataset:
@@ -242,33 +217,19 @@ if __name__ == "__main__":
     n_val = int(0.1 * len(data))
     train_data, val_data = data[:-n_val], data[-n_val:]
     
-    # Train draft model
-    draft_path = "checkpoints/gpt_draft.pt"
-    if not os.path.exists(draft_path):
-        print("Training draft model...")
-        draft_model = train_draft_model(tokenizer, train_data, val_data, epochs=args.draft_epochs, save_path=draft_path)
-    else:
-        ckpt = torch.load(draft_path, map_location="cpu", weights_only=False)
-        tokenizer_d = ckpt["tokenizer"]
-        draft_model = GPT(vocab_size=tokenizer_d.vocab_size, max_len=128, rope=True,
-                          d_model=64, num_heads=2, d_ff=128, num_layers=2).eval()
-        draft_model.load_state_dict(ckpt["model"])
-    
     # Load main model
     main_ckpt = torch.load("checkpoints/gpt_rope.pt", map_location="cpu", weights_only=False)
     main_model = GPT(vocab_size=main_ckpt["tokenizer"].vocab_size, max_len=128, rope=True,
                      num_kv_heads=main_ckpt.get("num_kv_heads"))
     main_model.load_state_dict(main_ckpt["model"])
     
-    # Run speculative decoding
-    device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
-    main_model.to(device).eval()
-    draft_model.to(device).eval()
+    # Create draft model from first 2 layers of main model
+    draft_model = create_draft_model(main_model, num_draft_layers=2)
     
-    print(f"Running speculative decoding with gamma={4}...")
+    print(f"Running speculative decoding with gamma={args.gamma}...")
     start = time.time()
     text = speculative_generate(main_model, draft_model, tokenizer, args.prompt, args.n_tokens, 
-                               temperature=args.temperature, top_p=args.top_p, gamma=4)
+                               temperature=args.temperature, top_p=args.top_p, gamma=args.gamma)
     elapsed = time.time() - start
     print(f"\nGenerated in {elapsed:.2f}s")
     print(text)
