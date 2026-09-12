@@ -4,7 +4,7 @@ Continuous batching for efficient LLM serving.
 
 Implements:
 - Dynamic batching (prefill + decode)
-- PagedAttention-style KV cache management
+- KV cache management compatible with mini-GPT
 - Request scheduling with priorities
 - Streaming responses
 """
@@ -15,7 +15,7 @@ import time
 import uuid
 from collections import deque
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import torch
 import torch.nn.functional as F
@@ -41,7 +41,7 @@ class Request:
     generated_ids: List[int] = field(default_factory=list)
     position: int = 0
     prefill_done: bool = False
-    kv_cache: Optional[List] = None
+    kv_cache: Optional[List[Tuple[torch.Tensor, torch.Tensor]]] = None
     finished: bool = False
     finish_reason: Optional[str] = None
 
@@ -52,74 +52,9 @@ class Batch:
     requests: List[Request]
     input_ids: torch.Tensor
     positions: torch.Tensor
-    kv_caches: List
+    kv_caches: List[Optional[List[Tuple[torch.Tensor, torch.Tensor]]]]
     is_prefill: bool
     max_seq_len: int
-
-
-class KVCacheManager:
-    """Manages KV cache blocks for continuous batching."""
-    
-    def __init__(self, model, max_blocks=1024, block_size=16, device="cpu"):
-        self.model = model
-        self.max_blocks = max_blocks
-        self.block_size = block_size
-        self.device = device
-        self.num_layers = len(model.blocks)
-        # Get config from model's __dict__
-        config = model.__dict__
-        self.num_kv_heads = config.get('num_kv_heads', config.get('num_heads', 4))
-        self.head_dim = config.get('d_model', 64) // config.get('num_heads', 4)
-        
-        # Pre-allocate cache blocks: [num_layers, max_blocks, num_kv_heads, block_size, head_dim * 2]
-        # We store K and V concatenated for efficiency
-        cache_shape = (self.num_layers, max_blocks, self.num_kv_heads, block_size, self.head_dim * 2)
-        self.cache = torch.zeros(cache_shape, dtype=torch.float32, device=device)
-        self.free_blocks = list(range(max_blocks))
-        self.used_blocks = {}  # request_id -> list of block indices
-    
-    def allocate(self, num_blocks):
-        """Allocate contiguous blocks."""
-        if len(self.free_blocks) < num_blocks:
-            return None
-        
-        blocks = self.free_blocks[:num_blocks]
-        self.free_blocks = self.free_blocks[num_blocks:]
-        return blocks
-    
-    def free(self, request_id):
-        """Free blocks for a request."""
-        if request_id in self.used_blocks:
-            self.free_blocks.extend(self.used_blocks[request_id])
-            del self.used_blocks[request_id]
-    
-    def get_cache_for_blocks(self, blocks, seq_len):
-        """Get cache view for given blocks up to seq_len."""
-        if not blocks:
-            return None
-        
-        # Concatenate blocks
-        full_cache = self.cache[:, blocks, :, :, :]  # [num_layers, num_blocks, num_kv_heads, block_size, 2*head_dim]
-        full_cache = full_cache.view(self.num_layers, -1, self.num_kv_heads, self.head_dim * 2)
-        
-        # Split K and V
-        k_cache = full_cache[:, :, :, :self.head_dim]
-        v_cache = full_cache[:, :, :, self.head_dim:]
-        
-        # Truncate to actual sequence length
-        k_cache = k_cache[:, :seq_len, :, :]
-        v_cache = v_cache[:, :seq_len, :, :]
-        
-        return list(zip(k_cache.unbind(0), v_cache.unbind(0)))
-    
-    def update_cache(self, blocks, layer_idx, k, v, start_pos):
-        """Update cache for specific layer and position."""
-        if not blocks:
-            return
-        
-        # This is a simplified version - real implementation would handle
-        # block chaining and partial block updates
-        pass
 
 
 class ContinuousBatchingEngine:
@@ -135,9 +70,6 @@ class ContinuousBatchingEngine:
         self.waiting_queue = deque()
         self.running_requests = {}
         self.finished_requests = {}
-        
-        # KV cache manager
-        self.cache_manager = KVCacheManager(model, device=device)
         
         # Stats
         self.stats = {
@@ -183,13 +115,9 @@ class ContinuousBatchingEngine:
                 self.finished_requests[req.id] = req
                 continue
             
-            req.kv_cache = self.cache_manager.allocate(
-                (req.input_ids.size(1) + self.cache_manager.block_size - 1) // self.cache_manager.block_size
-            )
-            if req.kv_cache is None:
-                # No cache space, put back
-                self.waiting_queue.appendleft(req)
-                break
+            # Initialize empty KV cache for this request
+            # The model's _cached_forward will create empty caches if None is passed
+            req.kv_cache = None
             
             batch_requests.append(req)
             self.running_requests[req.id] = req
@@ -213,7 +141,10 @@ class ContinuousBatchingEngine:
                 positions[i, :seq_len] = torch.arange(seq_len, device=self.device)
                 req.position = seq_len
             
-            return Batch(requests, input_ids, positions, [], True, max_len)
+            # Pass None for kv_caches - model will create empty ones
+            kv_caches = [None] * len(requests)
+            
+            return Batch(requests, input_ids, positions, kv_caches, True, max_len)
         else:
             # Decode: single token per request
             batch_size = len(requests)
@@ -227,11 +158,8 @@ class ContinuousBatchingEngine:
                     input_ids[i, 0] = req.input_ids[0, -1]
                 positions[i, 0] = req.position
             
-            # Get KV caches
-            kv_caches = []
-            for req in requests:
-                cache = self.cache_manager.get_cache_for_blocks(req.kv_cache, req.position)
-                kv_caches.append(cache)
+            # Get KV caches from requests
+            kv_caches = [req.kv_cache for req in requests]
             
             return Batch(requests, input_ids, positions, kv_caches, False, 1)
     
@@ -274,23 +202,25 @@ class ContinuousBatchingEngine:
                 requests[0].top_p
             )
             
-            # Update requests
+            # Update requests with new caches
             for i, req in enumerate(requests):
                 token_id = next_tokens[i].item()
                 req.generated_ids.append(token_id)
                 req.position += 1
+                req.kv_cache = new_caches[i] if i < len(new_caches) else None
                 
                 if not req.prefill_done:
                     req.prefill_done = True
                     self.stats["total_prefill_tokens"] += req.input_ids.size(1)
                 
                 # Check finish conditions
-                if token_id == self.tokenizer.eos_token_id or len(req.generated_ids) >= req.max_tokens:
+                # CharTokenizer doesn't have eos_token_id, just use max_tokens
+                finished = len(req.generated_ids) >= req.max_tokens
+                if finished:
                     req.finished = True
-                    req.finish_reason = "eos" if token_id == self.tokenizer.eos_token_id else "length"
+                    req.finish_reason = "length"
                     self.finished_requests[req.id] = req
                     del self.running_requests[req.id]
-                    self.cache_manager.free(req.id)
                     self.stats["completed_requests"] += 1
                     self.stats["total_tokens_generated"] += len(req.generated_ids)
         
