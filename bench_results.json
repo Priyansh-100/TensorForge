@@ -4,8 +4,30 @@
     "params": 810049,
     "val_loss_stored": 1.5023,
     "val_ppl_measured": 6.257485916609107,
-    "tok_s": 86.82277349054417,
+    "tok_s": 57.09853207237402,
     "cache_mb": 0.5,
+    "verify": {
+      "cache_ok": true
+    }
+  },
+  {
+    "name": "gpt_rope_bpe.pt",
+    "params": 924928,
+    "val_loss_stored": 3.0438858941197395,
+    "val_ppl_measured": 33.52473078237528,
+    "tok_s": 297.47047851403204,
+    "cache_mb": 0.5,
+    "verify": {
+      "cache_ok": true
+    }
+  },
+  {
+    "name": "gpt_rope_gqa.pt",
+    "params": 744001,
+    "val_loss_stored": 1.5339182056486607,
+    "val_ppl_measured": 6.339922712159395,
+    "tok_s": 282.6140919473624,
+    "cache_mb": 0.25,
     "verify": {
       "cache_ok": true
     }
